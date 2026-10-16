@@ -1,0 +1,13 @@
+{
+  "python": "3.12.14",
+  "packages": {
+    "torch": "2.7.1+cpu",
+    "torchvision": "0.22.1+cpu",
+    "numpy": "2.3.5",
+    "scipy": "1.17.0",
+    "sklearn": "1.8.0",
+    "PIL": "12.3.0",
+    "matplotlib": "3.10.8"
+  },
+  "gpu_tested": false
+}

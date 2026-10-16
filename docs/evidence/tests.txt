@@ -1,0 +1,40 @@
+Error in cpuinfo: failed to parse processor information from /proc/cpuinfo
+test_all_new_modules_receive_real_image_gradients (tests.test_expression.AttachmentTests.test_all_new_modules_receive_real_image_gradients) ... /workspace/scratch/53e0cadb5f7a/implementation/contrastive-unpaired-translation-master/models/networks.py:569: UserWarning: To copy construct from a tensor, it is recommended to use sourceTensor.detach().clone() or sourceTensor.detach().clone().requires_grad_(True), rather than torch.tensor(sourceTensor).
+  patch_id = torch.tensor(patch_id, dtype=torch.long, device=feat.device)
+ok
+test_default_width64_six_blocks_forward_and_backward (tests.test_expression.AttachmentTests.test_default_width64_six_blocks_forward_and_backward) ... ok
+test_empty_tissue_is_invalid (tests.test_expression.AttachmentTests.test_empty_tissue_is_invalid) ... ok
+test_error_head_interface_needs_no_IHC (tests.test_expression.AttachmentTests.test_error_head_interface_needs_no_IHC) ... ok
+test_full_grid_identity_and_coverage (tests.test_expression.AttachmentTests.test_full_grid_identity_and_coverage) ... ok
+test_manifest_rejects_changed_image_content (tests.test_expression.AttachmentTests.test_manifest_rejects_changed_image_content) ... ok
+test_numpy_torch_measurement_agree (tests.test_expression.AttachmentTests.test_numpy_torch_measurement_agree) ... ok
+test_one_source_pair_cannot_become_many_calibration_groups (tests.test_expression.AttachmentTests.test_one_source_pair_cannot_become_many_calibration_groups) ... ok
+test_paired_reference_survives_random_B (tests.test_expression.AttachmentTests.test_paired_reference_survives_random_B) ... ok
+test_same_image_content_cannot_cross_splits (tests.test_expression.AttachmentTests.test_same_image_content_cannot_cross_splits) ... ok
+test_teacher_cannot_change_distribution (tests.test_expression.AttachmentTests.test_teacher_cannot_change_distribution) ... ok
+test_certificate_bound_and_checkpoint_binding (tests.test_expression.StatisticalUnitFixtures.test_certificate_bound_and_checkpoint_binding) ... ok
+test_MC_variance_is_invariant_to_renaming (tests.test_multipair_debug.MultiPairRegressions.test_MC_variance_is_invariant_to_renaming) ... ok
+test_all_new_windows_keep_identity_coordinates (tests.test_multipair_debug.MultiPairRegressions.test_all_new_windows_keep_identity_coordinates) ... ok
+test_factory_does_not_parse_host_program_argv (tests.test_multipair_debug.MultiPairRegressions.test_factory_does_not_parse_host_program_argv) ... ok
+test_faint_IHC_is_not_all_rejected (tests.test_multipair_debug.MultiPairRegressions.test_faint_IHC_is_not_all_rejected) ... ok
+test_image_cache_is_bounded_and_owned_by_dataset (tests.test_multipair_debug.MultiPairRegressions.test_image_cache_is_bounded_and_owned_by_dataset) ... ok
+test_large_PNG_roundtrip_is_complete_and_lossless (tests.test_multipair_debug.MultiPairRegressions.test_large_PNG_roundtrip_is_complete_and_lossless) ... ok
+test_record_only_evaluation_retains_no_image_tensors (tests.test_multipair_debug.MultiPairRegressions.test_record_only_evaluation_retains_no_image_tensors) ... ok
+test_stale_protocol_and_invalid_scores_are_rejected (tests.test_multipair_debug.MultiPairRegressions.test_stale_protocol_and_invalid_scores_are_rejected) ... ok
+test_training_can_use_H_and_E_only_predicted_condition (tests.test_multipair_debug.MultiPairRegressions.test_training_can_use_H_and_E_only_predicted_condition) ... ok
+test_unvalidated_training_strategies_are_opt_in (tests.test_multipair_debug.MultiPairRegressions.test_unvalidated_training_strategies_are_opt_in) ... ok
+test_window_size_inferred_from_prepared_manifest (tests.test_multipair_debug.MultiPairRegressions.test_window_size_inferred_from_prepared_manifest) ... ok
+test_within_bin_mean_can_represent_near_zero (tests.test_multipair_debug.MultiPairRegressions.test_within_bin_mean_can_represent_near_zero) ... ok
+test_actual_roles_cannot_be_renamed_into_independent_calibration (tests.test_proof_audit.CompleteEvidenceTests.test_actual_roles_cannot_be_renamed_into_independent_calibration) ... ok
+test_formal_challenge_refuses_demo_representation (tests.test_proof_audit.CompleteEvidenceTests.test_formal_challenge_refuses_demo_representation) ... ok
+test_full_images_are_covered_once_before_quality_filter (tests.test_proof_audit.CompleteEvidenceTests.test_full_images_are_covered_once_before_quality_filter) ... ok
+test_invalid_certificate_release_flag_does_not_override_risk_bound (tests.test_proof_audit.CompleteEvidenceTests.test_invalid_certificate_release_flag_does_not_override_risk_bound) ... ok
+test_no_or_failing_certificate_never_releases (tests.test_proof_audit.CompleteEvidenceTests.test_no_or_failing_certificate_never_releases) ... ok
+test_radius_search_does_not_drop_dense_cluster_conflicts (tests.test_proof_audit.CompleteEvidenceTests.test_radius_search_does_not_drop_dense_cluster_conflicts) ... ok
+test_radius_search_matches_exhaustive_actual_data (tests.test_proof_audit.CompleteEvidenceTests.test_radius_search_matches_exhaustive_actual_data) ... ok
+test_zero_error_binomial_upper_matches_closed_form (tests.test_proof_audit.CompleteEvidenceTests.test_zero_error_binomial_upper_matches_closed_form) ... ok
+
+----------------------------------------------------------------------
+Ran 32 tests in 5.645s
+
+OK

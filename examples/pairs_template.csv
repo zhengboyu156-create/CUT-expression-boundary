@@ -1,0 +1,2 @@
+pair_id,group_id,group_kind,split,he,ihc
+REPLACE_PAIR_ID,REPLACE_REAL_SOURCE_ID,patient,train,/dataset/HE/PAIR.png,/dataset/IHC/PAIR.png

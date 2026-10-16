@@ -1,0 +1,2753 @@
+--- /dev/null
++++ b/README_EXPRESSION_CN.md
+@@ -0,0 +1,140 @@
++# 在上传的 CUT 代码库上实现区域表达边界、分布生成与自动拒绝
++
++本扩展沿用原始 CUT 的骨干、训练目标和六残差块生成器，新增 `--model expression_cut`。原始 `cut_model.py` 只增加显式命令行参数入口，`train.py` 接入可选进度钩子。原始 CUT 的随机 B 图仍用于对抗目标；`paired_B` 是单独读取的同坐标真实 IHC，供新增监督和离线误差计算。程序不做全局位移、局部对应搜索或人工选区。
++
++**当前支持的表达目标是区域 DAB 染色统计代理。** 原始图像本身提供图像级监督；分箱标签和像素 DAB 伪标签由固定测量器自动派生。像素概率辅助头不是细胞蛋白阳性概率，也不输出 HER2 临床分级。没有细胞/临床真值时，不作相应准确性声明。
++
++## 最新：全流程逐条证据审计
++
++完整报告：`artifacts/complete_evidence/complete_evidence_report.html`。三项创新共 18 步逐项对应真实图片、原始记录和测试；不能据现有数据证明三项研究创新全部有效。软件测试现为 32 项全部通过；本次没有重新训练 G，而是重新加载既有两组 160 步权重，独立推理和 NumPy float64 计量，指标与旧记录最大差小于 1e-6。
++
++新增第 10 项修复：形态检索的 top-16 截断会漏掉合格冲突候选。改为分批固定半径查询，临时邻居数组不覆盖所有窗口，并用 j>i 去重。全量含训练图的候选从 88 增至 106，独立穷举恰好 106；开发/留出 127 窗仍为 0 个冲突候选。该操作只比较不同 H&E 窗的形态；每个窗的 IHC 坐标保持原位，绝不进行区域外对应搜索。
++
++新负对照：默认分布头留出 log-loss 0.9762，劣于训练频率先验 0.1657；像素 DAB 辅助头 BCE 0.7734，劣于仅用训练阳性率的常数基线 0.1350。细胞检测、细胞蛋白阳性真值与膜定位尚未实现/提供，不能把像素辅助头称作细胞阳性模型。默认的面积率错误事件在留出全为 0，但额外的 IoU<0.1 空间诊断全部失败；该空间诊断没有被事后替换成 h 的训练目标。
++
++真正的 HE-only 入口已监测文件读取，只读取输入 H&E；输出 PNG 的解码核验另行记录；门控 G/h 摘要各计算 1 次；缺认证时 0/64 窗放行。数学软件校验：固定 7 阈值、alpha=0.05、预算 0.10，在零错误的有利条件下，仍至少需要 47 个被接受的独立 B 组；不是把 47 个相关图像窗当独立患者。当前没有核实患者组或独立 A/B 证书。身份、标记物和配准精度也没有因程序保持坐标一致而自动得到验证。
++
++```bash
++python -m unittest tests.test_expression tests.test_multipair_debug tests.test_proof_audit -v
++python -m tools.audit_complete_evidence
++python -m tools.report_complete_evidence
++```
++
++逐窗独立指标为 `artifacts/complete_evidence/independent_holdout_metrics.csv`；所有证据含 SHA256 索引和原始测试输出。合成单元夹具只验证软件，不作为生物学证据。
++
++## 上轮：新增六对图片的调试
++
++最新报告为 `artifacts/multipair_debug/multipair_debug_report.html`。使用新增 6 对图片和旧 1 对锚点，按图像对固定分成 5 对训练、1 对开发、1 对留出，来源身份均未核实，不能解释为患者独立验证。两臂生成器各训练 160 步、ngf=8、6 残差块。24 项回归测试覆盖已确认的软件问题。
++
++已修复：淡染 IHC 被整图排除、文件名改变采样结果、宿主 argv 污染、统计窗配置失配、评估积累全部图像张量、跨实例全局缓存、非法风险分数和协议失配未拒绝、重复读取权重计算哈希。新六对的有效窗从 8/384 增加为 333/384；同坐标映射始终不变。
++
++实际负结果：区域 MAE 很低仍可能定位错误，留出图 v1 的 MAE=0.003761、DAB 像素 IoU=0.000738。箱内代表值与预测条件混合的组合实验 MAE=0.303735，高于固定零基线 0.005177。组合策略已默认关闭，参数 `--learn_bin_means true --lambda_moment 2 --teacher_probability 0.5` 仅保留为明确的实验开关；单项效果尚未消融。默认参数为 false / 0 / 1，回到兼容训练路径。
++
++兼容分支原样复用 v1 本轮 G 权重，逐窗生成统计差为 0；这不是第三次生成器训练。它重新训练了匹配新协议的 h。开发与留出图的区域错误事件只有一个类别，AUROC 不能计算，不能将低 Brier 或第 0 箱准确率 100% 当作模块有效。没有独立来源认证，可信放行保持 0。
++
++复现多图实验：
++
++```bash
++python tools/run_multipair_debug.py --steps 160
++python -m tools.report_multipair_debug --base artifacts/multipair_debug_rerun
++python -m unittest tests.test_expression tests.test_multipair_debug -v
++```
++
++`examples/multipair/pairs.csv` 记录配对与调试角色，不需要 ROI 标注。`v1_source` 是冻结的旧源码，用于复现旧版错误；它不作为默认实现。原始逐窗结果与两次训练权重完整保存。部分训练图的全分辨率预览不重复打包，可用保存权重和 worker 重建；全部统计来自原始浮点输出。
++
++## 历史：最初单图像对实跑
++
++打开 `artifacts/attachment/verification_report.html`。`verification.json` 是原始数值，`step_evidence.json` 对照三个创新点共 18 步，`tests.txt` 是自动测试结果，两个模型目录含实际训练权重与每步损失。
++
++两张 1024×1024 附件自动得到 64 对 128×128 窗。所有窗固定 `he_bbox == ihc_bbox`。该实例只是一组来源，训练/评估同源，不能拆为 64 个独立患者。默认 `ngf=64` 的六残差块模型做真实前后向测试；CPU 微型训练使用 `ngf=8`、相同六残差块、相同训练步数、batch=4。原始骨干初始种子、批次顺序和每步 PatchNCE 随机种子固定。两种模型的额外模块和目标不同，因此总 G 损失不可横向比较。
++
++示例推理采用真实神经网络输出，不用手工着色代替 G。FiLM 响应不达标、样本差异过小等结果照实保留。错误预测器在本例也只有样本内训练；没有独立校准器，所以实际 H&E 推理自动拒绝全部可信表达展示。
++
++## 安装和复现
++
++已测试 Python 3.12、PyTorch 2.7.1 CPU、torchvision 0.22.1。建议独立虚拟环境。先按计算设备安装匹配的 torch/torchvision，再安装其余依赖：
++
++```bash
++python -m venv .venv
++source .venv/bin/activate
++python -m pip install torch==2.7.1 torchvision==0.22.1 --index-url https://download.pytorch.org/whl/cpu
++python -m pip install -r requirements-expression.txt
++python -m expression.cli demo --he examples/attachment_pair/he.jpg --ihc examples/attachment_pair/ihc.jpg --out artifacts/attachment --steps 120
++python -m unittest tests.test_expression -v
++```
++
++上述命令跑的是明确标记的附件过拟合演示。正式 `train` 不接受 demo split；演示代码通过显式 `demo_overfit` 开关执行。微型权重不能创建正式风险认证。
++
++## 完整 MIST 的输入与全自动流程
++
++完整数据未包含在附件中。本扩展不根据 patch 文件名猜测患者身份，不声称已核实官方 4,642/1,000 划分或患者关系。图像对数量、官方来源划分和组别信息以真实清单为准。
++
++`pairs.csv` 列为 `pair_id,group_id,group_kind,split,he,ihc`，见模板。`group_kind` 必须如实填 `patient`、`slide` 或 `unknown`。正式认证拒绝 unknown。路径可相对 CSV 所在目录。整图坐标不需要填，由程序自动分窗。允许 split：`train,val,risk_train,calibrate,certify,test`；test 表示锁定的官方测试来源。
++
++同名配对可以由下列程序自动生成。文件后缀不一致时，用身份正则提取共同的 pair key；这只是按文件身份配对，不搜索图像区域。来源组元数据必须来自数据提供者，不能由本程序创造。
++
++```bash
++python tools/build_expression_pairs.py --he-dir /dataset/HE --ihc-dir /dataset/IHC --metadata /dataset/source_metadata.csv --out pairs.csv
++python tools/run_expression_experiment.py --pairs pairs.csv --out runs/mist --g-steps 10000 --risk-steps 5000 --ngf 64 --batch-size 1
++```
++
++自动流程保留 test 全部来源组；其余组用固定种子划为 train、val、risk_train、calibrate A、certify B。图像内容哈希、pair ID、group ID 都检查跨 split 重叠；发现冲突立即报错。未知来源身份或来源组不足不会伪造分组继续认证。每一步的退出码写 `pipeline_status.json`。
++
++依次执行：固定网格/固定质量规则 → CUT 与扩展 CUT 训练 → 训练组拟合 H&E 形态表示并在 test 自动检索跨组染色冲突候选 → 冻结 G 后在 risk_train 训练 h → 独立 A 保序校准 → 独立 B 风险阈值认证 → 锁定 test 评价。训练步数是预先指定的固定预算，不按测试结果选择 checkpoint；本脚本暂未实现开发组早停，val 可用于事先设计实验，不能用 test 调参。
++
++固定训练预算不是正式有效性的充分条件。发表级实验还应增加仅分布头等消融、多随机种子和来源组重采样区间。本代码不把这些尚未运行的实验写成已完成。
++
++### 原版训练入口 / 现有 CUT 权重
++
++新数据集/模型接入原版工厂，可用原来的 `train.py`，保留原脚本的 GPU 与日志功能。本次另外实跑了原生入口的一个 CPU 优化步，启用 `nce_idt=true`，完成 G/F/D 保存；日志见 `artifacts/native_entry/native_entry.log`。关闭 Visdom 时上述扩展依赖即可；启用 GUI 时再装原 `requirements.txt` 的对应依赖。
++
++```bash
++python train.py --model expression_cut --dataset_mode expression_pair --pair_manifest runs/mist/manifest.jsonl --pair_split train --netG resnet_6blocks --ngf 64 --stats_window 128 --preprocess none --gpu_ids 0 --display_id -1 --name mist_expression --nce_idt true
++```
++
++`--backbone_checkpoint /path/latest_net_G.pth` 可严格加载原 CUT 生成器权重，再初始化新头与恒等 FiLM；通道数、抗混叠配置等必须与该 checkpoint 一致。六块限制会显式检查。PatchNCE 的特征索引沿用上传库的 `0,4,8,12,16`，均在该六块架构中有效。分布头放在条件化之前；PatchNCE 的特征抽取走未条件化骨干，不读取真实 IHC。
++
++`expression.cli` 无 GUI 训练/风险/认证流程当前使用 CPU；大型正式训练推荐原生 GPU 入口。若要由原生入口的权重进入后续流程，需使用下面的转换程序导出带来源元数据的封装文件，不能直接把不明来源的 checkpoint 当独立校准模型。
++
++```bash
++python tools/export_expression_checkpoint.py --checkpoint checkpoints/mist_expression/latest_net_G.pth --manifest runs/mist/manifest.jsonl --ngf 64 --steps 10000 --out runs/mist/expression_cut/generator.pt
++```
++
++转换器严格核对网络参数，并将训练来源组与原始权重哈希写入封装。既往训练来源是操作者提供的信息，不能仅凭权重自动证实；来源不明时不能声称独立校准。
++
++## 训练目标和自动参考
++
++固定白点 255；H 向量 `[.65,.70,.29]`，DAB 向量 `[.27,.57,.78]`，归一化并作光密度投影。H&E 组织前景阈值为平均 OD > 0.20；IHC 改用更宽的平均 OD > 0.02 近白可观测性掩膜，避免把淡染当作无组织。连通域清理规则固定；窗级覆盖至少 50%，H 标准差至少 0.08。IHC 可观测性只用于离线缺失参考检查，不移动坐标，且仍是需验证的质量代理。参考和生成统计都使用固定 H&E 掩膜作分母；空掩膜不产生阳/阴标签。
++
++每窗区域目标 `S` 是粗组织内 `DAB > 0.20` 的面积率，分成 5 箱。新增损失：分箱交叉熵、生成染色统计一致性、可配置的像素 DAB 伪标签 BCE；原 GAN 和 PatchNCE 保留。可配置配对 L1 默认权重 0。FiLM 位于瓶颈以及解码器最后一次归一化之后，两处最后一层都零初始化，因此未训练时与原骨干完全一致。第一轮只有瓶颈 FiLM 时调制响应很弱，失败结果与当时代码保存在 `artifacts/round1_bottleneck_film`。
++
++默认条件采样是预测分箱采样后取箱中心。实验开关可学习箱内代表值、增加条件量损失并渐变混入预测条件；组合实测退步，默认禁用，不能把该策略称为已验证修复。它表达模型学到的区域染色量分布；单参考训练、分箱离散化和固定染色分解均有限制，不能因多次采样看起来不同就宣称得到了真实生物学后验。生成位置和膜定位有效性须另有真值及独立实验。
++
++## 错误校准与拒绝
++
++`h` 输入 H&E、生成 RGB、真实 G 采样的方差图。采样种子来自 H&E 像素内容，改文件名不会改变采样；风险 checkpoint 和认证文件同时绑定采样/质量协议哈希。旧 h 需要重训，旧认证不会静默套用新协议。IHC 只离线定义 `abs(S_generated-S_reference) > delta` 事件，部署不接受 IHC 输入。原始 h 分数、采样差异和像素概率都不直接叫作校准置信度。
++
++独立校准 A 拟合保序映射；独立认证 B 在事先固定的候选阈值上计算单侧 Clopper–Pearson 二项风险上界，显著性预算 `alpha / 候选数`，自动选预算内覆盖最多者。模型权重哈希绑定风险模型和认证文件。认证缺失、权重不一致、无阈值通过、质量无效或 demo 权重均不放行。
++
++**二项认证的统计对象明确限定为：每独立来源组固定种子均匀抽 1 个有效窗，组等权。** 切片内窗相关，不能把所有窗当 IID 用普通二项公式。此实现不认证 pooled 全窗/全像素风险；全窗目标需要专门的分组风险方法。若 group_kind 为 slide，不能把结果称作患者级保证。软件单元测试中的合成 100 组夹具只验证边界计算和拒绝逻辑，不是附件/MIST 校准证据。
++
++```bash
++python -m expression.cli infer --he /new/HE.png --generator runs/mist/expression_cut/generator.pt --risk runs/mist/risk/risk.pt --certificate runs/mist/calibration/certificate.json --out runs/new_case
++```
++
++`generated_RESEARCH_ONLY.png` 始终是研究输出；`selective_display.png` 才应用质量/风险遮罩。拒绝窗保留状态，绝不自动当阴性。输出记录概率、每窗坐标、门控原因与覆盖率。
++
++## 文件导航
++
++- `data/expression_pair_dataset.py`：独立配对参考与同步几何处理。
++- `models/expression_cut_model.py`：原 CUT 训练循环上的新损失和优化器。
++- `expression/statistics.py`：固定可微/硬测量器与组织代理。
++- `expression/networks.py`：分布头、像素伪标签头、FiLM 和 h。
++- `expression/challenge.py`：只比较 H&E 的形态近邻，IHC 仍取各自原位。
++- `expression/calibration.py`：独立分组、概率映射、有限候选阈值认证和拒绝。
++- `expression/runner.py`、`expression/cli.py`：批处理训练、测试、H&E-only 推理。
++- `tests/test_expression.py`：真实附件模块测试和明确区分的统计软件夹具。
++
++原代码 LICENSE 保留。训练输出不能用于临床判断。
++
++打包时仅把附件 manifest 的图像路由改为相对路径；原 manifest 与原 SHA256 保存在同目录。训练权重保留原始训练 manifest 哈希，`manifest_path_translation.json` 记录路径转换。图像内容哈希、坐标、分组和标签均未更改。
+--- /dev/null
++++ b/data/expression_pair_dataset.py
+@@ -0,0 +1,71 @@
++"""CUT random target B plus a separate, geometrically synchronized real reference."""
++from collections import OrderedDict
++import numpy as np
++from PIL import Image
++import torch
++from data.base_dataset import BaseDataset
++from expression.manifest import read_manifest
++from expression.statistics import foreground, to_tensor
++from expression.protocol import policy_hash
++
++
++class ExpressionPairDataset(BaseDataset):
++    @staticmethod
++    def modify_commandline_options(parser, is_train):
++        parser.add_argument('--pair_manifest', required=True)
++        parser.add_argument('--pair_split', default='train')
++        parser.add_argument('--demo_overfit', action='store_true')
++        parser.add_argument('--image_cache_size',type=int,default=16)
++        parser.set_defaults(preprocess='none')
++        return parser
++
++    def __init__(self, opt):
++        super().__init__(opt)
++        if opt.direction != 'AtoB' or opt.input_nc != 3 or opt.output_nc != 3:
++            raise ValueError('Expression proxies require RGB H&E to RGB IHC.')
++        if opt.preprocess != 'none':
++            raise ValueError('Use preprocess=none; geometry is defined by the shared pixel window.')
++        if opt.pair_split == 'demo' and opt.isTrain and not opt.demo_overfit:
++            raise ValueError('Training on the attachment requires explicit --demo_overfit.')
++        if opt.isTrain and opt.pair_split not in ('train', 'demo'):
++            raise ValueError('G training is restricted to train, or explicitly marked demo.')
++        self.rows = [r for r in read_manifest(opt.pair_manifest) if r['split']==opt.pair_split and r['valid']]
++        self._images=OrderedDict();self.cache_hits=0;self.cache_misses=0
++        self.cache_limit=getattr(opt,'image_cache_size',16)
++        if self.cache_limit<0:raise ValueError('Image cache size must be nonnegative.')
++        if not self.rows: raise ValueError('No valid windows in requested split.')
++        if opt.pair_split!='demo' and any(r.get('protocol_hash')!=policy_hash(opt.stats_window) for r in self.rows):
++            raise ValueError('Formal data must be prepared with the current sampling/quality protocol.')
++        if any(r['he_bbox'][2:] != [opt.stats_window, opt.stats_window] for r in self.rows):
++            raise ValueError('Manifest window and model stats_window differ.')
++
++    def image(self, path):
++        if path in self._images:
++            self.cache_hits+=1;self._images.move_to_end(path);return self._images[path]
++        self.cache_misses+=1
++        rgb = np.array(Image.open(path).convert('RGB'))
++        result=(rgb,foreground(rgb))
++        if self.cache_limit:
++            self._images[path]=result
++            while len(self._images)>self.cache_limit:self._images.popitem(last=False)
++        return result
++
++    def crop(self, row, key):
++        rgb, mask = self.image(row[key]); x,y,w,h = row[key+'_bbox']
++        return to_tensor(rgb[y:y+h,x:x+w]), torch.from_numpy(mask[y:y+h,x:x+w].copy()[None]).float()
++
++    def __getitem__(self, index):
++        row = self.rows[index]
++        a, mask = self.crop(row, 'he'); ref, _ = self.crop(row, 'ihc')
++        # The independent target draw cannot change the paired reference.
++        j = index if self.opt.serial_batches else int(torch.randint(len(self.rows), ()).item())
++        b, _ = self.crop(self.rows[j], 'ihc')
++        if self.opt.isTrain and not self.opt.no_flip and bool(torch.rand(())>.5):
++            a, ref, mask = [torch.flip(t, [-1]) for t in (a, ref, mask)]
++        return dict(A=a, B=b, paired_B=ref, tissue_mask=mask,
++                    A_paths=row['he'], B_paths=self.rows[j]['ihc'],
++                    window_id=row['window_id'], group_id=row['group_id'],
++                    bbox=torch.tensor(row['he_bbox']), paired_bbox=torch.tensor(row['ihc_bbox']))
++
++    def __len__(self):
++        return len(self.rows)
+--- /dev/null
++++ b/expression/__init__.py
+@@ -0,0 +1,4 @@
++"""Region-level staining proxies, conditional CUT, and selective prediction.
++
++No function in this package converts DAB pixels into clinical HER2 labels.
++"""
+--- /dev/null
++++ b/expression/artifact_io.py
+@@ -0,0 +1,25 @@
++"""Write complete PNG buffers atomically, then decode the actual file for QA."""
++import io
++import os
++from pathlib import Path
++from PIL import Image
++
++
++def write_png_bytes(path,payload):
++    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
++    temporary=path.with_name(path.name+'.tmp')
++    with temporary.open('wb') as f:
++        f.write(payload);f.flush();os.fsync(f.fileno())
++    with Image.open(temporary) as image:image.load()
++    os.replace(temporary,path)
++    with Image.open(path) as image:image.load()
++
++
++def save_png(path,image):
++    buffer=io.BytesIO();image.save(buffer,format='PNG')
++    write_png_bytes(path,buffer.getvalue())
++
++
++def save_figure(path,figure,dpi=155):
++    buffer=io.BytesIO();figure.savefig(buffer,format='png',dpi=dpi)
++    write_png_bytes(path,buffer.getvalue())
+--- /dev/null
++++ b/expression/calibration.py
+@@ -0,0 +1,80 @@
++"""Independent-group calibration and finite-candidate binomial certification.
++
++Estimand: one fixed-seed uniform valid window from each independent source group,
++with groups equally weighted. This is not an all-pixel or all-window guarantee.
++"""
++import numpy as np
++from scipy.stats import beta
++from sklearn.isotonic import IsotonicRegression
++from .protocol import policy_hash
++
++
++def representative_per_group(rows,seed=0):
++    groups={}
++    for r in rows:groups.setdefault(r['group_id'],[]).append(r)
++    rng=np.random.default_rng(seed)
++    return [sorted(groups[g],key=lambda r:r['window_id'])[int(rng.integers(len(groups[g])))] for g in sorted(groups)]
++
++
++def transform(scores,calibrator):
++    return np.interp(scores,calibrator['x'],calibrator['y'])
++
++
++def fit_and_certify(a,b,provenance,budget=.10,alpha=.05,thresholds=(.02,.05,.1,.2,.4,.6,1.)):
++    ga={r['group_id'] for r in a};gb={r['group_id'] for r in b}
++    excluded=set(provenance['training_groups'])
++    if ga&gb or (ga|gb)&excluded:
++        raise ValueError('Training, probability calibration A, and certification B groups must be disjoint.')
++    if len(ga)<2 or len(gb)<2:
++        raise ValueError('At least two independent groups in each calibration role are required; one image pair cannot certify risk.')
++    kinds={r['group_kind'] for r in a+b}
++    if len(kinds)!=1 or not kinds<={'patient','slide'}:
++        raise ValueError('Verified, consistently defined patient or slide source groups are required.')
++    if any(r['split']!='calibrate' for r in a) or any(r['split']!='certify' for r in b):
++        raise ValueError('Calibration roles do not match the manifest.')
++    if provenance.get('protocol_hash')!=policy_hash(provenance.get('window',128)):
++        raise ValueError('Calibration provenance must bind the current sampling/quality protocol.')
++    if not 0<budget<1 or not 0<alpha<1:raise ValueError('Invalid risk or significance budget.')
++    thresholds=sorted(set(float(t) for t in thresholds))
++    if not thresholds or min(thresholds)<0 or max(thresholds)>1:raise ValueError('Invalid fixed thresholds.')
++    aa=representative_per_group(a);bb=representative_per_group(b)
++    iso=IsotonicRegression(out_of_bounds='clip').fit([r['score'] for r in aa],[r['event'] for r in aa])
++    mapping=dict(x=iso.X_thresholds_.tolist(),y=iso.y_thresholds_.tolist())
++    score=transform([r['score'] for r in bb],mapping);event=np.array([r['event'] for r in bb])
++    candidates=[]
++    for t in thresholds:
++        selected=score<=t;n=int(selected.sum());e=int(event[selected].sum())
++        upper=float(beta.ppf(1-alpha/len(thresholds),e+1,n-e)) if n and e<n else 1.
++        candidates.append(dict(threshold=t,n=n,errors=e,upper=upper,coverage=n/len(bb)))
++    passed=[c for c in candidates if c['n'] and c['upper']<=budget]
++    chosen=max(passed,key=lambda c:(c['coverage'],c['threshold'])) if passed else None
++    return dict(version=1,calibrator=mapping,candidates=candidates,chosen=chosen,budget=budget,alpha=alpha,
++                calibration_groups=sorted(ga),certification_groups=sorted(gb),group_kind=next(iter(kinds)),
++                provenance=provenance,estimand='equal-source-groups; one uniform valid window per group',
++                release_enabled=chosen is not None)
++
++
++def gate(scores,certificate,generator_hash,risk_hash):
++    """No IHC input, and no implicit acceptance when calibration is absent/stale."""
++    scores=np.asarray(scores,dtype=float)
++    if certificate is None:return np.zeros_like(scores,dtype=bool),'missing_certificate'
++    p=certificate['provenance']
++    if p['generator_hash']!=generator_hash or p['risk_hash']!=risk_hash:
++        return np.zeros_like(scores,dtype=bool),'checkpoint_mismatch'
++    if p.get('protocol_hash')!=policy_hash(p.get('window',128)):
++        return np.zeros_like(scores,dtype=bool),'protocol_mismatch'
++    if certificate['chosen'] is None:return np.zeros_like(scores,dtype=bool),'no_certified_threshold'
++    chosen=certificate['chosen']
++    if not certificate.get('release_enabled') or chosen.get('upper',1)>certificate['budget']:
++        return np.zeros_like(scores,dtype=bool),'invalid_certificate_policy'
++    valid=np.isfinite(scores)&(scores>=0)&(scores<=1)
++    return valid & (transform(scores,certificate['calibrator'])<=chosen['threshold']),'certified_policy' if valid.all() else 'invalid_scores_rejected'
++
++
++def fixed_coverage_report(rows,coverages=(.5,.8,1.)):
++    ordered=sorted(rows,key=lambda r:(r['score'],r['window_id']));result=[]
++    for coverage in coverages:
++        n=max(1,int(round(len(ordered)*coverage))) if ordered else 0
++        selected=ordered[:n];errors=sum(r['event'] for r in selected)
++        result.append(dict(coverage=coverage,n=n,errors=errors,risk=errors/n if n else None))
++    return result
+--- /dev/null
++++ b/expression/challenge.py
+@@ -0,0 +1,63 @@
++"""H&E-to-H&E retrieval; each window keeps its own same-coordinate IHC."""
++import numpy as np
++from sklearn.cluster import KMeans
++from sklearn.metrics import silhouette_score
++from sklearn.neighbors import NearestNeighbors
++
++
++def fit_morphology(rows, demo=False):
++    rows=[r for r in rows if r['valid']]
++    allowed={'demo'} if demo else {'train'}
++    if not rows or any(r['split'] not in allowed for r in rows):
++        raise ValueError('Morphology scaler and clusters must be fitted on train only.')
++    if len(rows)<4: raise ValueError('Need at least four valid morphology windows.')
++    x=np.array([r['features'] for r in rows]);mean=x.mean(0);scale=np.maximum(x.std(0),1e-6)
++    z=(x-mean)/scale; best=None
++    for k in range(2,min(5,len(rows)-1)+1):
++        model=KMeans(n_clusters=k,n_init=10,random_state=0).fit(z)
++        if len(np.unique(model.labels_))<2:continue
++        score=float(silhouette_score(z,model.labels_))
++        if best is None or score>best[0]:best=(score,model.cluster_centers_)
++    centers=z.mean(0,keepdims=True) if best is None else best[1]
++    return dict(mean=mean.tolist(),scale=scale.tolist(),centers=centers.tolist(),
++                silhouette=None if best is None else best[0],
++                fit_groups=sorted({r['group_id'] for r in rows}),demo_only=demo,
++                distance_threshold=1.5,delta_threshold=.20,measurement='fixed_HE_mask_DAB_area')
++
++
++def retrieve(rows,state,demo=False,neighbors=16,query_batch_size=64):
++    """Enumerate all eligible H&E neighbours inside the frozen radius.
++
++    ``neighbors`` is retained for callers of the former API. It no longer caps
++    the candidate set: a top-k cap silently missed valid expression conflicts
++    in dense morphology clusters. No IHC location is searched or changed.
++    """
++    rows=[r for r in rows if r['valid']]
++    if not demo:
++        if state['demo_only'] or any(r['split']!='test' for r in rows):
++            raise ValueError('Formal challenge retrieval requires held-out test and a train-fitted representation.')
++        if set(state['fit_groups']) & {r['group_id'] for r in rows}:
++            raise ValueError('Morphology fitting groups overlap held-out challenge groups.')
++    if len(rows)<2:return []
++    z=(np.array([r['features'] for r in rows])-state['mean'])/state['scale']
++    centers=np.array(state['centers']); labels=((z[:,None]-centers)**2).sum(2).argmin(1)
++    if query_batch_size<1:raise ValueError('Query batch size must be positive.')
++    nn=NearestNeighbors(radius=state['distance_threshold']).fit(z)
++    pairs=[]
++    # Bound temporary neighbour arrays; do not retain a set of every nearby
++    # non-conflicting pair. Symmetric radius queries allow j > i deduplication.
++    for start in range(0,len(rows),query_batch_size):
++        distances,indices=nn.radius_neighbors(z[start:start+query_batch_size],sort_results=True)
++        for local,(ds,js) in enumerate(zip(distances,indices)):
++            i=start+local
++            for distance,j in zip(ds,js):
++                j=int(j)
++                if j<=i or labels[i]!=labels[j]:continue
++                a,b=rows[i],rows[j]
++                if not demo and a['group_id']==b['group_id']:continue
++                delta=abs(a['q']-b['q'])
++                if distance<=state['distance_threshold'] and delta>=state['delta_threshold']:
++                    pairs.append(dict(a=a['window_id'],b=b['window_id'],distance=float(distance),delta=delta,
++                        he_a=a['he_bbox'],ihc_a=a['ihc_bbox'],he_b=b['he_bbox'],ihc_b=b['ihc_bbox'],
++                        scope='within-source proxy demo' if demo else 'held-out cross-group staining-proxy challenge'))
++    return sorted(pairs,key=lambda p:p['distance'])
+--- /dev/null
++++ b/expression/cli.py
+@@ -0,0 +1,136 @@
++"""Run with python -m expression.cli --help. No GUI or manual ROIs required."""
++import argparse
++import json
++from pathlib import Path
++import numpy as np
++import torch
++from PIL import Image
++from .manifest import prepare,load_pair_csv,automatic_group_split,read_manifest,sha256
++from .challenge import fit_morphology,retrieve
++from .calibration import fit_and_certify,gate,representative_per_group
++from .runner import (seed_everything,make_options,make_dataset,train_generator,load_generator,
++                     train_risk,load_risk,evaluate_generator,metric_summary,generated_batch)
++from .statistics import foreground,to_tensor,to_rgb,components
++from .protocol import policy_hash
++from .artifact_io import save_png
++
++
++def write_json(path,value):
++    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
++    path.write_text(json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False))
++
++
++def predict_image(he_path,generator_path,risk_path,out,certificate_path=None,source_id='deployment'):
++    """H&E-only deployment. Reference IHC is neither accepted nor accessed."""
++    model,opt,gm=load_generator(generator_path)
++    risk,rm=load_risk(risk_path,generator_path) if risk_path else (None,None)
++    rgb=np.array(Image.open(he_path).convert('RGB'));height,width=rgb.shape[:2];w=opt.stats_window
++    if width%w or height%w:raise ValueError('Deployment shape must be divisible by the frozen window.')
++    mask=foreground(rgb);H=components(rgb,he=True)[:,:,0]
++    certificate=json.loads(Path(certificate_path).read_text()) if certificate_path else None
++    generator_digest=sha256(generator_path);risk_digest=sha256(risk_path) if risk_path else ''
++    display=np.full_like(rgb,220);generated=np.zeros_like(rgb);probabilities=[];rows=[]
++    for y in range(0,height,w):
++        for x in range(0,width,w):
++            he=to_tensor(rgb[y:y+w,x:x+w])[None]
++            wid=f'{source_id}:R{y//w+1}C{x//w+1}'
++            with torch.no_grad():
++                fake,var,aux,_=generated_batch(model.netG,he,[wid],rm['samples'] if rm else 3)
++                score=float(risk(he,fake,var).sigmoid()) if risk is not None else float('nan')
++            valid=bool(mask[y:y+w,x:x+w].mean()>=.5 and H[y:y+w,x:x+w].std()>=.08)
++            allowed,reason=gate([score],certificate,generator_digest,risk_digest)
++            accepted=bool(valid and allowed[0] and not gm['demo_only'] and rm is not None and not rm['demo_only'])
++            if gm['demo_only'] or rm is not None and rm['demo_only']:reason='demo_checkpoint_not_certified'
++            crop=to_rgb(fake[0]);generated[y:y+w,x:x+w]=crop
++            if accepted:display[y:y+w,x:x+w]=crop
++            rows.append(dict(window_id=wid,bbox=[x,y,w,w],quality=valid,accepted=accepted,
++                             raw_error_score=score if np.isfinite(score) else None,reason=reason))
++            if aux is not None:probabilities.append(aux['probabilities'][0,:,0,0].tolist())
++    out=Path(out);out.mkdir(parents=True,exist_ok=True)
++    save_png(out/'generated_RESEARCH_ONLY.png',Image.fromarray(generated))
++    save_png(out/'selective_display.png',Image.fromarray(display))
++    write_json(out/'prediction.json',dict(windows=rows,probabilities=probabilities,
++        release_coverage=sum(r['accepted'] for r in rows)/len(rows),
++        reference_ihc_accessed=False,probability_target='regional DAB proxy bins, not cell HER2 status'))
++    return rows
++
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--threads',type=int,default=1)
++    sub=parser.add_subparsers(dest='command',required=True)
++    p=sub.add_parser('prepare');p.add_argument('--pairs',required=True);p.add_argument('--out',required=True)
++    p.add_argument('--window',type=int,default=128);p.add_argument('--auto-split-groups',action='store_true')
++    p=sub.add_parser('train');p.add_argument('--manifest',required=True);p.add_argument('--out',required=True)
++    p.add_argument('--model',choices=['cut','expression_cut'],default='expression_cut');p.add_argument('--ngf',type=int,default=64)
++    p.add_argument('--steps',type=int,default=10000);p.add_argument('--batch-size',type=int,default=1)
++    p.add_argument('--backbone-checkpoint',default='')
++    p=sub.add_parser('challenge');p.add_argument('--manifest',required=True);p.add_argument('--out',required=True)
++    p=sub.add_parser('fit-risk');p.add_argument('--manifest',required=True);p.add_argument('--generator',required=True)
++    p.add_argument('--out',required=True);p.add_argument('--steps',type=int,default=5000)
++    p=sub.add_parser('evaluate-generator');p.add_argument('--manifest',required=True);p.add_argument('--generator',required=True)
++    p.add_argument('--out',required=True);p.add_argument('--split',choices=['val','test'],default='test')
++    for command in ('certify','evaluate'):
++        p=sub.add_parser(command);p.add_argument('--manifest',required=True);p.add_argument('--generator',required=True)
++        p.add_argument('--risk',required=True);p.add_argument('--out',required=True)
++        if command=='certify':p.add_argument('--budget',type=float,default=.1)
++        else:p.add_argument('--certificate')
++    p=sub.add_parser('infer');p.add_argument('--he',required=True);p.add_argument('--generator',required=True)
++    p.add_argument('--risk');p.add_argument('--certificate');p.add_argument('--out',required=True)
++    p=sub.add_parser('demo');p.add_argument('--he',required=True);p.add_argument('--ihc',required=True)
++    p.add_argument('--out',default='artifacts/attachment');p.add_argument('--steps',type=int,default=120)
++    args=parser.parse_args();seed_everything(threads=args.threads)
++    if args.command=='prepare':
++        pairs=load_pair_csv(args.pairs)
++        if args.auto_split_groups:pairs=automatic_group_split(pairs)
++        rows=prepare(pairs,args.out,args.window);print('same-coordinate windows',len(rows),'valid',sum(r['valid'] for r in rows))
++    elif args.command=='train':
++        kwargs={'backbone_checkpoint':args.backbone_checkpoint} if args.model=='expression_cut' else {}
++        opt=make_options(args.manifest,args.out,args.model,ngf=args.ngf,batch_size=args.batch_size,**kwargs)
++        train_generator(opt,args.steps,args.out)
++    elif args.command=='challenge':
++        rows=read_manifest(args.manifest);state=fit_morphology([r for r in rows if r['split']=='train'])
++        pairs=retrieve([r for r in rows if r['split']=='test'],state)
++        write_json(Path(args.out)/'morphology.json',state);write_json(Path(args.out)/'challenge.json',pairs)
++    elif args.command=='fit-risk':
++        model,opt,gm=load_generator(args.generator);opt.pair_manifest=args.manifest
++        dataset=make_dataset(opt,'risk_train')
++        if gm['demo_only'] or set(gm['training_groups']) & {r['group_id'] for r in dataset.rows}:
++            raise ValueError('Risk training must use groups disjoint from generator training.')
++        train_risk(model.netG,dataset,args.out,args.generator,steps=args.steps)
++    elif args.command=='evaluate-generator':
++        model,opt,gm=load_generator(args.generator);opt.pair_manifest=args.manifest
++        ds=make_dataset(opt,args.split)
++        if gm['demo_only'] or set(gm['training_groups']) & {r['group_id'] for r in ds.rows}:
++            raise ValueError('Held-out generator evaluation cannot use demo or generator-training groups.')
++        records,_=evaluate_generator(model.netG,ds,samples=1,keep_outputs=False)
++        write_json(Path(args.out)/'generator_evaluation.json',dict(pooled=metric_summary(records),records=records))
++    elif args.command in ('certify','evaluate'):
++        model,opt,gm=load_generator(args.generator);opt.pair_manifest=args.manifest
++        risk,rm=load_risk(args.risk,args.generator)
++        if gm['demo_only'] or rm['demo_only']:raise ValueError('Attachment-overfit weights cannot certify or evaluate clinical/generalization risk.')
++        training_groups=sorted(set(gm['training_groups'])|set(rm['training_groups']))
++        def collect(split):
++            ds=make_dataset(opt,split)
++            if set(training_groups)&{r['group_id'] for r in ds.rows}:raise ValueError('Evaluation group leaked into training.')
++            return evaluate_generator(model.netG,ds,risk,samples=rm['samples'],delta=rm['delta'],keep_outputs=False)[0]
++        if args.command=='certify':
++            provenance=dict(generator_hash=sha256(args.generator),risk_hash=sha256(args.risk),
++                            training_groups=training_groups,delta=rm['delta'],window=rm['window'],samples=rm['samples'],
++                            protocol_hash=policy_hash(rm['window']))
++            cert=fit_and_certify(collect('calibrate'),collect('certify'),provenance,budget=args.budget)
++            write_json(Path(args.out)/'certificate.json',cert)
++        else:
++            records=collect('test');cert=json.loads(Path(args.certificate).read_text()) if args.certificate else None
++            if cert and ({r['group_id'] for r in records}&set(cert['calibration_groups']+cert['certification_groups'])):
++                raise ValueError('Test source groups overlap calibration.')
++            selected,reason=gate([r['score'] for r in records],cert,sha256(args.generator),sha256(args.risk))
++            write_json(Path(args.out)/'test.json',dict(pooled=metric_summary(records),
++                equal_group_roi=metric_summary(representative_per_group(records)),
++                released_windows=int(selected.sum()),total_windows=sum(r['split']=='test' for r in read_manifest(args.manifest)),policy=reason,records=records))
++    elif args.command=='infer':predict_image(args.he,args.generator,args.risk,args.out,args.certificate)
++    else:
++        from .validation import attachment_demo
++        attachment_demo(args.he,args.ihc,args.out,args.steps)
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/expression/manifest.py
+@@ -0,0 +1,137 @@
++"""Full-image identity-coordinate tiling and provenance checks."""
++import csv
++import hashlib
++import json
++from pathlib import Path
++import numpy as np
++from PIL import Image
++from .statistics import components, descriptor, foreground
++from .protocol import quality_policy,policy_hash
++
++SPLITS = ('train', 'val', 'risk_train', 'calibrate', 'certify', 'test', 'demo')
++
++
++def sha256(path):
++    digest = hashlib.sha256()
++    with open(path, 'rb') as f:
++        for chunk in iter(lambda: f.read(1024 * 1024), b''):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def read_manifest(path):
++    path = Path(path).resolve()
++    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
++    hashes={}
++    for r in rows:
++        for key in ('he', 'ihc'):
++            p = Path(r[key]); r[key] = str((path.parent / p).resolve()) if not p.is_absolute() else str(p)
++            if key+'_sha256' in r:
++                if r[key] not in hashes:hashes[r[key]]=sha256(r[key])
++                if hashes[r[key]]!=r[key+'_sha256']:raise ValueError('Image content changed since manifest preparation.')
++        if r['he_bbox'] != r['ihc_bbox']:
++            raise ValueError('Only identity-coordinate pairs are allowed.')
++        if r['split'] not in SPLITS:
++            raise ValueError('Unknown split: ' + r['split'])
++    check_leakage(rows)
++    return rows
++
++
++def check_leakage(rows):
++    """A group, image content, or pair may never occur in different splits."""
++    seen = {}; content_groups={}; windows=set()
++    for r in rows:
++        if r['window_id'] in windows:raise ValueError('Duplicate window identity: '+r['window_id'])
++        windows.add(r['window_id'])
++        for key in ('he_sha256','ihc_sha256'):
++            if key not in r:continue
++            token=(key,r[key])
++            if token in content_groups and content_groups[token]!=r['group_id']:
++                raise ValueError('Identical image content has multiple source-group IDs.')
++            content_groups[token]=r['group_id']
++        for token in [('group', r['group_id']), ('pair', r['pair_id']),
++                      ('he_content', r.get('he_sha256', r['he'])),
++                      ('ihc_content', r.get('ihc_sha256', r['ihc']))]:
++            if token in seen and seen[token] != r['split']:
++                raise ValueError('Cross-split leakage detected: ' + str(token))
++            seen[token] = r['split']
++
++
++def automatic_group_split(pairs, seed=0):
++    """Keep official test groups untouched; divide the remaining independent groups.
++
++    At least five non-test groups are needed, one per development role. The
++    small-group allocation is operational, never evidence of adequate sample size.
++    """
++    groups = {}
++    for p in pairs:
++        groups.setdefault(p['group_id'], set()).add(p['split'])
++    if any('test' in roles and len(roles) > 1 for roles in groups.values()):
++        raise ValueError('An official-test group also occurs outside test.')
++    candidates = sorted(g for g, roles in groups.items() if roles != {'test'})
++    if len(candidates) < 5:
++        raise ValueError('Need at least five non-test source groups, or use the explicit demo command.')
++    rng = np.random.default_rng(seed); rng.shuffle(candidates)
++    roles = ['train', 'val', 'risk_train', 'calibrate', 'certify']
++    allocation = dict(zip(candidates[:5], roles))
++    for g in candidates[5:]:
++        allocation[g] = rng.choice(roles, p=[.55, .15, .10, .10, .10]).item()
++    for p in pairs:
++        if p['split'] != 'test':
++            p['split'] = allocation[p['group_id']]
++    return pairs
++
++
++def prepare(pairs, output, window=128, min_tissue=.50, min_h_std=.08):
++    output = Path(output).resolve(); output.parent.mkdir(parents=True, exist_ok=True)
++    rows = [];pair_ids=set()
++    for p in pairs:
++        if not p.get('group_id') or not p.get('pair_id'):
++            raise ValueError('Pair and source-group IDs are required; no guessed patient IDs.')
++        if p['pair_id'] in pair_ids:raise ValueError('Duplicate pair ID in input list.')
++        pair_ids.add(p['pair_id'])
++        he_path, ihc_path = Path(p['he']).resolve(), Path(p['ihc']).resolve()
++        he = np.asarray(Image.open(he_path).convert('RGB'))
++        ihc = np.asarray(Image.open(ihc_path).convert('RGB'))
++        if he.shape != ihc.shape:
++            raise ValueError('Paired image shapes differ; resizing is not a correspondence rule.')
++        height, width = he.shape[:2]
++        if window <= 0 or window % 4 or width % window or height % window:
++            raise ValueError('Image dimensions must be divisible by the window; no silent edge crop.')
++        # Weak/negative staining is not failed tissue. Use a broad near-white
++        # observability test for IHC, independently of DAB positivity.
++        hm, im = foreground(he), foreground(ihc,threshold=.02)
++        policy=quality_policy(window,min_tissue,min_h_std)
++        H, D = components(he, he=True)[:, :, 0], components(ihc)[:, :, 1]
++        he_hash, ihc_hash = sha256(he_path), sha256(ihc_path)
++        for y in range(0, height, window):
++            for x in range(0, width, window):
++                sl = np.s_[y:y+window, x:x+window]
++                mask = hm[sl]; hc, ic, hs = float(mask.mean()), float(im[sl].mean()), float(H[sl].std())
++                reason = 'ok'
++                if hc < min_tissue: reason = 'he_foreground'
++                elif hs < min_h_std: reason = 'he_structure'
++                elif ic < min_tissue: reason = 'reference_unobserved'
++                # Shared denominator: only the fixed H&E mask, including at evaluation.
++                q = float((D[sl][mask] > .20).mean()) if mask.any() else None
++                rows.append(dict(pair_id=p['pair_id'], group_id=p['group_id'],
++                    group_kind=p.get('group_kind', 'unknown'), split=p['split'],
++                    window_id=f"{p['pair_id']}:R{y//window+1}C{x//window+1}",
++                    he=str(he_path), ihc=str(ihc_path), he_sha256=he_hash, ihc_sha256=ihc_hash,
++                    he_bbox=[x,y,window,window], ihc_bbox=[x,y,window,window],
++                    mapping='identity', he_tissue=hc, ihc_tissue=ic, h_std=hs,
++                    qc_policy=policy,protocol_hash=policy_hash(window,policy),
++                    valid=reason=='ok', reason=reason, q=q,
++                    features=descriptor(he[sl]).tolist()))
++    check_leakage(rows)
++    output.write_text(''.join(json.dumps(r, ensure_ascii=False)+'\n' for r in rows))
++    return rows
++
++
++def load_pair_csv(path):
++    path = Path(path).resolve()
++    with path.open(newline='') as f: rows = list(csv.DictReader(f))
++    for r in rows:
++        for key in ('he', 'ihc'):
++            r[key] = str((path.parent / r[key]).resolve())
++    return rows
+--- /dev/null
++++ b/expression/networks.py
+@@ -0,0 +1,97 @@
++"""Additive modules around the uploaded CUT ResnetGenerator.
++
++PatchNCE feature requests use the unconditioned backbone. Posterior logits are
++computed before FiLM, so paired IHC/teacher conditions cannot leak into them.
++"""
++import torch
++from torch import nn
++from torch.nn import functional as F
++from models.networks import ResnetBlock
++
++
++class ConditionalGenerator(nn.Module):
++    def __init__(self, backbone, channels, window=128, bins=5,learn_bin_means=False):
++        super().__init__()
++        self.backbone, self.window, self.bins = backbone, window, bins
++        self.first_residual = next(i for i,m in enumerate(backbone.model) if isinstance(m, ResnetBlock))
++        self.distribution_head = nn.Conv2d(channels, bins, 1)
++        self.within_bin_head=nn.Conv2d(channels,bins,1) if learn_bin_means else None
++        if self.within_bin_head is not None:
++            nn.init.zeros_(self.within_bin_head.weight);nn.init.zeros_(self.within_bin_head.bias)
++        self.pixel_head = nn.Conv2d(channels, 1, 1)
++        self.film = nn.Sequential(nn.Conv2d(1, channels, 1), nn.ReLU(), nn.Conv2d(channels, 2*channels, 1))
++        nn.init.zeros_(self.film[-1].weight); nn.init.zeros_(self.film[-1].bias)
++        # A bottleneck-only affine signal can be largely erased by decoder
++        # InstanceNorm. This second FiLM is after the final normalization, before
++        # RGB projection; both paths start as exact identities.
++        decoder_channels=channels//4
++        self.decoder_film=nn.Sequential(nn.Conv2d(1,decoder_channels,1),nn.ReLU(),
++                                         nn.Conv2d(decoder_channels,2*decoder_channels,1))
++        nn.init.zeros_(self.decoder_film[-1].weight);nn.init.zeros_(self.decoder_film[-1].bias)
++
++    def forward(self, image, layers=None, encode_only=False, condition=None,
++                return_aux=False, sample=False, generator=None,teacher_mask=None):
++        if layers:
++            return self.backbone(image, list(layers), encode_only)
++        if encode_only: raise ValueError('encode_only requires feature layer indices.')
++        if any(s % self.window for s in image.shape[-2:]):
++            raise ValueError('Image and statistic window dimensions are inconsistent.')
++        feat = image
++        for layer in self.backbone.model[:self.first_residual]: feat = layer(feat)
++        unconditioned = feat
++        grid = tuple(s//self.window for s in image.shape[-2:])
++        pooled=F.adaptive_avg_pool2d(feat,grid)
++        logits = self.distribution_head(pooled)
++        probabilities = logits.softmax(1)
++        centers = (torch.arange(self.bins, device=image.device, dtype=image.dtype)+.5)/self.bins
++        lower=torch.arange(self.bins,device=image.device,dtype=image.dtype)[None,:,None,None]/self.bins
++        bin_means=lower+self.within_bin_head(pooled).sigmoid()/self.bins if self.within_bin_head is not None else centers[None,:,None,None].expand_as(probabilities)
++        expected=(probabilities*bin_means).sum(1,keepdim=True)
++        if condition is None:
++            if sample:
++                flat = probabilities.permute(0,2,3,1).reshape(-1,self.bins)
++                bins = torch.multinomial(flat, 1, generator=generator).view(image.shape[0],1,*grid)
++                condition = bin_means.gather(1,bins)
++            else:
++                condition = expected
++        elif teacher_mask is not None:
++            if teacher_mask.shape!=condition.shape:raise ValueError('Teacher mask shape differs from the condition grid.')
++            condition=torch.where(teacher_mask,condition,expected.detach())
++        if condition.shape != (image.shape[0],1,*grid):
++            raise ValueError('Condition must be B x 1 x statistic-grid-height x statistic-grid-width.')
++        if not torch.isfinite(condition).all() or (condition<0).any() or (condition>1).any():
++            raise ValueError('Conditions must be finite values in [0,1].')
++        gamma,beta = self.film(F.interpolate(condition, size=feat.shape[-2:], mode='nearest')).chunk(2,1)
++        feat = feat*(1+.5*torch.tanh(gamma)) + beta
++        output = feat
++        for index in range(self.first_residual,len(self.backbone.model)):
++            if index==len(self.backbone.model)-3:
++                dg,db=self.decoder_film(F.interpolate(condition,size=output.shape[-2:],mode='nearest')).chunk(2,1)
++                output=output*(1+.5*torch.tanh(dg))+db
++            output=self.backbone.model[index](output)
++        pixel_logits = F.interpolate(self.pixel_head(unconditioned),
++                                     size=image.shape[-2:], mode='bilinear', align_corners=False) if return_aux else None
++        if return_aux:
++            return output, dict(logits=logits, probabilities=probabilities, condition=condition,
++                                pixel_logits=pixel_logits,bin_means=bin_means,expected_condition=expected)
++        return output
++
++    def unconditioned_features(self, image):
++        feat=image
++        for layer in self.backbone.model[:self.first_residual]: feat=layer(feat)
++        return feat
++
++
++class ErrorPredictor(nn.Module):
++    """Deployable raw error score: H&E, generated RGB, sample-variance map only."""
++    def __init__(self, window=128, width=16):
++        super().__init__(); self.window=window
++        self.net=nn.Sequential(nn.Conv2d(7,width,5,stride=4,padding=2), nn.ReLU(),
++                               nn.Conv2d(width,width*2,3,stride=2,padding=1),nn.ReLU(),
++                               nn.Conv2d(width*2,1,1))
++
++    def forward(self, he, generated, variance):
++        if he.shape!=generated.shape or variance.shape!=(he.shape[0],1,*he.shape[-2:]):
++            raise ValueError('Risk inputs have incompatible dimensions.')
++        grid=tuple(s//self.window for s in he.shape[-2:])
++        return F.adaptive_avg_pool2d(self.net(torch.cat([he,generated,variance],1)),grid)
+--- /dev/null
++++ b/expression/protocol.py
+@@ -0,0 +1,17 @@
++"""Frozen measurement/sampling contract, bound to risk checkpoints and certificates."""
++import hashlib
++import json
++
++SAMPLING_PROTOCOL='he_content_seed_v2'
++
++
++def quality_policy(window=128,min_tissue=.5,min_h_std=.08):
++    return dict(version=2,window=window,he_foreground_od=.20,ihc_observability_od=.02,
++                min_tissue=min_tissue,min_h_std=min_h_std,dab_threshold=.20,
++                reference_denominator='fixed_HE_foreground',mapping='identity')
++
++
++def policy_hash(window=128,quality=None):
++    contract=dict(quality=quality if quality is not None else quality_policy(window),sampling=SAMPLING_PROTOCOL,
++                  error_statistic='abs_hard_DAB_area_difference',inference='conditional_mean')
++    return hashlib.sha256(json.dumps(contract,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+--- /dev/null
++++ b/expression/runner.py
+@@ -0,0 +1,217 @@
++"""Headless training and evaluation using the uploaded CUT implementations."""
++import argparse
++import hashlib
++import json
++from pathlib import Path
++from types import SimpleNamespace
++import numpy as np
++import torch
++from torch.nn import functional as F
++from torch.utils.data import DataLoader
++from options.train_options import TrainOptions
++from models.cut_model import CUTModel
++from models.expression_cut_model import ExpressionCUTModel
++from data.expression_pair_dataset import ExpressionPairDataset
++from .networks import ConditionalGenerator, ErrorPredictor
++from .statistics import StainStatistics
++from .manifest import sha256
++from .calibration import fixed_coverage_report, gate, representative_per_group
++from .manifest import read_manifest
++from .protocol import SAMPLING_PROTOCOL,policy_hash
++
++
++def seed_everything(seed=0,threads=1):
++    np.random.seed(seed);torch.manual_seed(seed);torch.set_num_threads(threads)
++    torch.backends.nnpack.set_flags(False)
++
++
++def make_options(manifest,out,model='expression_cut',split='train',ngf=64,batch_size=1,**kwargs):
++    parser=TrainOptions().initialize(argparse.ArgumentParser(allow_abbrev=False))
++    cls=ExpressionCUTModel if model=='expression_cut' else CUTModel
++    parser=cls.modify_commandline_options(parser,True,command_line=[])
++    if model=='cut':parser.add_argument('--stats_window',type=int,default=128)
++    parser=ExpressionPairDataset.modify_commandline_options(parser,True)
++    # Both baselines use the same identity-NCE setting for the attachment comparison.
++    args=['--pair_manifest',str(manifest),'--pair_split',split,'--netG','resnet_6blocks',
++          '--model',model,'--dataset_mode','expression_pair','--gpu_ids','-1',
++          '--ngf',str(ngf),'--ndf',str(ngf),'--batch_size',str(batch_size),
++          '--nce_idt','false','--no_flip','--preprocess','none','--num_threads','0',
++          '--name',model,'--checkpoints_dir',str(out),'--netF_nc','64','--num_patches','32']
++    if split=='demo':args+=['--demo_overfit']
++    opt=parser.parse_args(args);opt.gpu_ids=[];opt.isTrain=True
++    windows={tuple(r['he_bbox'][2:]) for r in read_manifest(manifest)}
++    if len(windows)!=1 or next(iter(windows))[0]!=next(iter(windows))[1]:raise ValueError('Manifest must have one square statistic-window size.')
++    opt.stats_window=next(iter(windows))[0]
++    opt.n_epochs=100000;opt.n_epochs_decay=0
++    for k,v in kwargs.items():
++        if not hasattr(opt,k):raise ValueError('Unknown model option '+k)
++        setattr(opt,k,v)
++    return opt
++
++
++def make_dataset(opt,split=None,training=False):
++    d=vars(opt).copy();d['isTrain']=training
++    if split is not None:d['pair_split']=split
++    return ExpressionPairDataset(SimpleNamespace(**d))
++
++
++def train_generator(opt,steps,out):
++    if steps<1:raise ValueError('Training steps must be positive.')
++    dataset=make_dataset(opt,training=True)
++    loader=DataLoader(dataset,batch_size=opt.batch_size,shuffle=True,drop_last=True,num_workers=0,
++                      generator=torch.Generator().manual_seed(0))
++    if len(loader)==0:raise ValueError('Batch exceeds valid dataset size.')
++    model=(ExpressionCUTModel if opt.model=='expression_cut' else CUTModel)(opt)
++    torch.manual_seed(0);iterator=iter(loader);first=next(iterator)
++    model.data_dependent_initialize(first)
++    # data_dependent_initialize deliberately creates F before its optimizer.
++    log=[]
++    for step in range(steps):
++        torch.manual_seed(1337+step);np.random.seed(1337+step)
++        try:batch=next(iterator)
++        except StopIteration:iterator=iter(loader);batch=next(iterator)
++        model.set_input(batch)
++        if hasattr(model,'set_training_progress'):model.set_training_progress(step/max(steps-1,1))
++        model.optimize_parameters()
++        losses={k:float(v) for k,v in model.get_current_losses().items()}
++        if not all(np.isfinite(v) for v in losses.values()):raise FloatingPointError('Non-finite training loss.')
++        log.append(dict(step=step+1,**losses))
++        if (step+1)%20==0:print(opt.model,'step',step+1,'loss',round(losses['G'],5),flush=True)
++    out=Path(out);out.mkdir(parents=True,exist_ok=True)
++    path=out/'generator.pt'
++    metadata=dict(options=vars(opt),training_groups=sorted({r['group_id'] for r in dataset.rows}),
++                  demo_only=opt.pair_split=='demo',steps=steps,manifest_hash=sha256(opt.pair_manifest),
++                  architecture_version=2,sampling_protocol=SAMPLING_PROTOCOL,protocol_hash=policy_hash(opt.stats_window))
++    torch.save(dict(generator=model.netG.state_dict(),feature_projector=model.netF.state_dict(),
++                    discriminator=model.netD.state_dict(),metadata=metadata),path)
++    (out/'training.json').write_text(json.dumps(log,indent=2))
++    return model,dataset,metadata,path
++
++
++def load_generator(path):
++    checkpoint=torch.load(path,map_location='cpu',weights_only=True)
++    metadata=checkpoint['metadata'];opt=SimpleNamespace(**metadata['options']);opt.isTrain=False;opt.gpu_ids=[]
++    if hasattr(opt,'backbone_checkpoint'):opt.backbone_checkpoint=''
++    if opt.model=='expression_cut':opt.learn_bin_means=any('within_bin_head.' in k for k in checkpoint['generator'])
++    model=(ExpressionCUTModel if opt.model=='expression_cut' else CUTModel)(opt)
++    model.netG.load_state_dict(checkpoint['generator']);model.netG.eval()
++    return model,opt,metadata
++
++
++@torch.no_grad()
++def generated_batch(net,he,ids,samples=3):
++    if isinstance(net,ConditionalGenerator):
++        generated,aux=net(he,return_aux=True)
++        draws=[]
++        for image,wid in zip(he,ids):
++            # IDs are bookkeeping, never a source of stochastic risk differences.
++            content=image.detach().cpu().contiguous().numpy().tobytes()
++            seed=int(hashlib.sha256(content).hexdigest()[:16],16)%(2**63-1)
++            rng=torch.Generator(device=he.device).manual_seed(seed)
++            draws.append(torch.stack([net(image[None],sample=True,generator=rng)[0] for _ in range(samples)]))
++        draws=torch.stack(draws)
++        variance=draws.var(1,unbiased=False).mean(1,keepdim=True)
++        return generated,variance,aux,draws
++    generated=net(he)
++    return generated,torch.zeros_like(he[:,:1]),None,generated[:,None].expand(-1,samples,-1,-1,-1)
++
++
++@torch.no_grad()
++def evaluate_generator(net,dataset,risk=None,batch_size=4,samples=3,delta=.10,keep_outputs=True,output_callback=None):
++    net.eval()
++    if risk is not None:risk.eval()
++    measurement=StainStatistics(dataset.opt.stats_window)
++    rows={r['window_id']:r for r in dataset.rows};records=[];outputs=[]
++    for batch in DataLoader(dataset,batch_size=batch_size,shuffle=False,num_workers=0):
++        fake,variance,aux,draws=generated_batch(net,batch['A'],batch['window_id'],samples)
++        target,_=measurement(batch['paired_B'],batch['tissue_mask'])
++        predicted,_=measurement(fake,batch['tissue_mask'])
++        score=risk(batch['A'],fake,variance).sigmoid().flatten() if risk is not None else torch.full((len(fake),),float('nan'))
++        for i,wid in enumerate(batch['window_id']):
++            row=rows[wid];error=abs(float(predicted[i])-float(target[i]))
++            record={k:row[k] for k in ['window_id','group_id','group_kind','split']}
++            record.update(q_reference=float(target[i]),q_generated=float(predicted[i]),error=error,
++                          event=int(error>delta),score=float(score[i]) if risk is not None else None)
++            m=batch['tissue_mask'][i]>0
++            pd=(measurement.dab(fake[i:i+1])[0]>.20)&m
++            rd=(measurement.dab(batch['paired_B'][i:i+1])[0]>.20)&m
++            union=int((pd|rd).sum());intersection=int((pd&rd).sum())
++            record['dab_iou']=intersection/union if union else None
++            record['rgb_l1']=float(((fake[i]-batch['paired_B'][i]).abs()*m).sum()/(3*m.sum().clamp_min(1)))
++            if aux is not None:
++                probs=aux['probabilities'][i,:,0,0].cpu().numpy();bin_id=min(int(float(target[i])*5),4)
++                record.update(probabilities=probs.tolist(),bin_target=bin_id,
++                              log_loss=float(-np.log(max(probs[bin_id],1e-12))))
++                record['predicted_condition']=float(aux['expected_condition'][i])
++            records.append(record)
++            output=dict(id=wid,he=batch['A'][i],reference=batch['paired_B'][i],mask=batch['tissue_mask'][i],
++                                fake=fake[i],variance=variance[i],samples=draws[i],
++                                pixel_probability=None if aux is None else aux['pixel_logits'][i].sigmoid())
++            if keep_outputs:outputs.append(output)
++            if output_callback is not None:output_callback(output,record)
++    return records,outputs
++
++
++def train_risk(net,dataset,out,generator_path,steps=150,batch_size=4,samples=3,delta=.10,cache_demo=False):
++    if steps<1 or samples<2:raise ValueError('Risk training needs positive steps and at least two generated samples.')
++    if dataset.opt.pair_split not in ('risk_train','demo'):raise ValueError('Error predictor needs its own risk_train groups.')
++    net.eval();head=ErrorPredictor(dataset.opt.stats_window);optimizer=torch.optim.Adam(head.parameters(),lr=.002)
++    measurement=StainStatistics(dataset.opt.stats_window)
++    loader=DataLoader(dataset,batch_size=batch_size,shuffle=True,num_workers=0)
++    observed_labels={}
++    def inputs(batch):
++        with torch.no_grad():
++            fake,var,_,_=generated_batch(net,batch['A'],batch['window_id'],samples)
++            q,_=measurement(fake,batch['tissue_mask']);real,_=measurement(batch['paired_B'],batch['tissue_mask'])
++            event=((q-real).abs()>delta).float()
++            for wid,label in zip(batch['window_id'],event.flatten().tolist()):observed_labels[wid]=int(label)
++        return batch['A'],fake,var,event
++    if cache_demo:
++        if dataset.opt.pair_split!='demo':raise ValueError('In-memory cache is limited to the small attachment demo.')
++        cached=[inputs(b) for b in DataLoader(dataset,batch_size=batch_size,shuffle=False)]
++        iterator=None
++    else:iterator=iter(loader)
++    losses=[]
++    for step in range(steps):
++        if cache_demo:he,fake,var,event=cached[step%len(cached)]
++        else:
++            try:batch=next(iterator)
++            except StopIteration:iterator=iter(loader);batch=next(iterator)
++            he,fake,var,event=inputs(batch)
++        optimizer.zero_grad();logits=head(he,fake,var);loss=F.binary_cross_entropy_with_logits(logits,event)
++        if not torch.isfinite(loss):raise FloatingPointError('Non-finite error-predictor loss.')
++        loss.backward();optimizer.step();losses.append(float(loss.detach()))
++    head.eval();out=Path(out);out.mkdir(parents=True,exist_ok=True)
++    metadata=dict(generator_hash=sha256(generator_path),training_groups=sorted({r['group_id'] for r in dataset.rows}),
++                  delta=delta,samples=samples,window=dataset.opt.stats_window,demo_only=dataset.opt.pair_split=='demo',
++                  sampling_protocol=SAMPLING_PROTOCOL,protocol_hash=policy_hash(dataset.opt.stats_window))
++    metadata.update(observed_windows=len(observed_labels),observed_error_events={str(v):sum(x==v for x in observed_labels.values()) for v in [0,1]},
++                    discrimination_training_has_both_classes=len(set(observed_labels.values()))==2)
++    torch.save(dict(state=head.state_dict(),metadata=metadata),out/'risk.pt')
++    (out/'risk_training.json').write_text(json.dumps(losses))
++    return head,metadata,out/'risk.pt'
++
++
++def load_risk(path,generator_path):
++    saved=torch.load(path,map_location='cpu',weights_only=True);metadata=saved['metadata']
++    if metadata['generator_hash']!=sha256(generator_path):raise ValueError('Risk predictor belongs to a different frozen generator.')
++    if metadata.get('sampling_protocol')!=SAMPLING_PROTOCOL or metadata.get('protocol_hash')!=policy_hash(metadata['window']):
++        raise ValueError('Risk checkpoint uses an incompatible sampling/quality protocol; retrain it.')
++    head=ErrorPredictor(metadata['window']);head.load_state_dict(saved['state']);head.eval()
++    return head,metadata
++
++
++def metric_summary(records):
++    if not records:return dict(n=0)
++    summary=dict(n=len(records),mae=float(np.mean([r['error'] for r in records])),
++                 error_rate=float(np.mean([r['event'] for r in records])))
++    if 'log_loss' in records[0]:
++        summary['bin_log_loss']=float(np.mean([r['log_loss'] for r in records]))
++        summary['bin_accuracy']=float(np.mean([np.argmax(r['probabilities'])==r['bin_target'] for r in records]))
++    if 'dab_iou' in records[0]:
++        ious=[r['dab_iou'] for r in records if r['dab_iou'] is not None]
++        summary.update(mean_dab_iou=float(np.mean(ious)) if ious else None,
++                       rgb_l1=float(np.mean([r['rgb_l1'] for r in records])))
++    if records[0]['score'] is not None:
++        summary['fixed_coverage']=fixed_coverage_report(records)
++    return summary
+--- /dev/null
++++ b/expression/statistics.py
+@@ -0,0 +1,84 @@
++"""Fixed stain measurement. Images are NCHW in [-1, 1].
++
++The same H&E-derived foreground is used for reference and generated statistics.
++The IHC foreground is an offline missing-tissue diagnostic, never a shifted ROI.
++"""
++import numpy as np
++import torch
++from torch import nn
++from torch.nn import functional as F
++from scipy import ndimage as ndi
++
++
++def stain_matrix(second):
++    h = np.array([.65, .70, .29]); h /= np.linalg.norm(h)
++    s = np.asarray(second, dtype=float); s /= np.linalg.norm(s)
++    r = np.cross(h, s); r /= np.linalg.norm(r)
++    return np.column_stack([h, s, r])
++
++
++def components(rgb, he=False):
++    second = [.07, .99, .11] if he else [.27, .57, .78]
++    od = -np.log((np.asarray(rgb, dtype=float) + 1) / 256)
++    return np.maximum(od @ np.linalg.inv(stain_matrix(second)).T, 0)
++
++
++def foreground(rgb, threshold=.20):
++    od = -np.log((np.asarray(rgb, dtype=float) + 1) / 256)
++    mask = ndi.binary_closing(od.mean(2) > threshold, iterations=2)
++    labels, _ = ndi.label(mask)
++    sizes = np.bincount(labels.ravel()); keep = sizes >= 32; keep[0] = False
++    return keep[labels]
++
++
++def descriptor(rgb):
++    h = components(rgb, he=True)[:, :, 0]
++    gradient = np.hypot(*np.gradient(ndi.gaussian_filter(h, 1)))
++    peaks = (h == ndi.maximum_filter(h, size=9)) & (h > .25)
++    return np.array([h.mean(), h.std(), *np.quantile(h, [.25, .75]),
++                     gradient.mean(), gradient.std(), (rgb.min(2) > 205).mean(),
++                     peaks.mean(), foreground(rgb).mean()])
++
++
++def to_tensor(rgb):
++    return torch.from_numpy(np.array(rgb, dtype=np.float32).transpose(2, 0, 1) / 127.5 - 1)
++
++
++def to_rgb(tensor):
++    return ((tensor.detach().cpu().clamp(-1, 1).numpy().transpose(1, 2, 0) + 1) * 127.5).round().astype(np.uint8)
++
++
++class StainStatistics(nn.Module):
++    def __init__(self, window=128, threshold=.20, sharpness=25.):
++        super().__init__()
++        if window <= 0 or window % 4:
++            raise ValueError('Statistic window must be positive and divisible by four.')
++        self.window, self.threshold, self.sharpness = window, threshold, sharpness
++        inverse = np.linalg.inv(stain_matrix([.27, .57, .78]))
++        self.register_buffer('dab_vector', torch.tensor(inverse[1], dtype=torch.float32))
++
++    def dab(self, image):
++        rgb = (image.clamp(-1, 1) + 1) * 127.5
++        od = -torch.log((rgb + 1) / 256)
++        return torch.einsum('c,bchw->bhw', self.dab_vector, od).clamp_min(0).unsqueeze(1)
++
++    def forward(self, image, mask, soft=False):
++        if image.shape[-2:] != mask.shape[-2:] or mask.shape[1] != 1:
++            raise ValueError('Image and fixed mask must have identical spatial dimensions.')
++        if any(s % self.window for s in image.shape[-2:]):
++            raise ValueError('Input dimensions must be multiples of the statistic window.')
++        d = self.dab(image)
++        positive = torch.sigmoid((d - self.threshold) * self.sharpness) if soft else (d > self.threshold).float()
++        denominator = F.avg_pool2d(mask.float(), self.window)
++        numerator = F.avg_pool2d(positive * mask, self.window)
++        valid = denominator > 0
++        return numerator / denominator.clamp_min(1e-8), valid
++
++    @staticmethod
++    def bins(q, count=5):
++        return (q.clamp(0, 1) * count).long().clamp_max(count - 1).squeeze(1)
++
++
++def masked_mean(value, valid):
++    valid = valid.to(value.dtype)
++    return (value * valid).sum() / valid.sum().clamp_min(1)
+--- /dev/null
++++ b/expression/validation.py
+@@ -0,0 +1,286 @@
++"""Measured attachment demonstration, including negative/insufficient outcomes."""
++import base64
++import html
++import io
++import json
++from pathlib import Path
++import time
++import unittest
++import numpy as np
++from PIL import Image
++import torch
++import matplotlib
++matplotlib.use('Agg')
++import matplotlib.pyplot as plt
++from .artifact_io import save_figure,save_png
++from .manifest import prepare,sha256
++from .statistics import StainStatistics,to_rgb
++from .challenge import fit_morphology,retrieve
++from .calibration import fit_and_certify,gate
++from .runner import (seed_everything,make_options,make_dataset,train_generator,train_risk,
++                     evaluate_generator,metric_summary)
++
++
++def dump(path,data):
++    Path(path).write_text(json.dumps(data,ensure_ascii=False,indent=2,allow_nan=False))
++
++
++def attachment_demo(he_path,ihc_path,out,steps=120):
++    out=Path(out).resolve();out.mkdir(parents=True,exist_ok=True);start=time.monotonic()
++    manifest=out/'manifest.jsonl'
++    rows=prepare([dict(pair_id='attachment',group_id='attachment_source',group_kind='unknown',
++                       split='demo',he=str(Path(he_path).resolve()),ihc=str(Path(ihc_path).resolve()))],manifest)
++    print('PREPARE',len(rows),'identity windows;',sum(r['valid'] for r in rows),'valid',flush=True)
++    import tests.test_expression as test_module
++    test_module.MANIFEST=manifest
++    stream=io.StringIO();result=unittest.TextTestRunner(stream=stream,verbosity=2).run(
++        unittest.defaultTestLoader.loadTestsFromModule(test_module))
++    (out/'tests.txt').write_text(stream.getvalue())
++    print(stream.getvalue(),flush=True)
++    if not result.wasSuccessful():raise RuntimeError('Module validation failed; training result is not publishable.')
++    test_info=dict(run=result.testsRun,failures=len(result.failures),errors=len(result.errors))
++    state=fit_morphology(rows,demo=True);candidates=retrieve(rows,state,demo=True)
++    dump(out/'morphology.json',state);dump(out/'local_challenge_candidates.json',candidates)
++    models={};datasets={};metadata={};paths={};records={};outputs={};initial={};logs={}
++    for name in ('cut','expression_cut'):
++        seed_everything()
++        opt=make_options(manifest,out/name,name,'demo',ngf=8,batch_size=4)
++        dataset=make_dataset(opt)
++        from models.cut_model import CUTModel
++        from models.expression_cut_model import ExpressionCUTModel
++        fresh=(ExpressionCUTModel if name=='expression_cut' else CUTModel)(opt)
++        initial_records,_=evaluate_generator(fresh.netG,dataset,batch_size=4,samples=1)
++        initial[name]=metric_summary(initial_records)
++        del fresh
++        seed_everything()
++        model,_,meta,path=train_generator(opt,steps,out/name)
++        ds=make_dataset(opt)
++        rr,oo=evaluate_generator(model.netG,ds,batch_size=4,samples=3)
++        models[name]=model;datasets[name]=ds;metadata[name]=meta;paths[name]=path;records[name]=rr;outputs[name]=oo
++        logs[name]=json.loads((out/name/'training.json').read_text())
++        print('MEASURED',name,metric_summary(rr),flush=True)
++    risk,rm,risk_path=train_risk(models['expression_cut'].netG,datasets['expression_cut'],
++        out/'expression_cut',paths['expression_cut'],steps=200,cache_demo=True)
++    enhanced,en_outputs=evaluate_generator(models['expression_cut'].netG,datasets['expression_cut'],risk,batch_size=4,samples=3)
++    records['expression_cut']=enhanced;outputs['expression_cut']=en_outputs
++    # Directly test the learned generator's response, without recoloring pixels.
++    measurement=StainStatistics();controls=[];control_images=[];g=models['expression_cut'].netG.eval()
++    with torch.no_grad():
++        for index in range(len(datasets['expression_cut'])):
++            sample=datasets['expression_cut'][index];a=sample['A'][None];mask=sample['tissue_mask'][None]
++            q=[];images=[]
++            for condition in (.1,.5,.9):
++                fake=g(a,condition=torch.full((1,1,1,1),condition));value,_=measurement(fake,mask)
++                q.append(float(value));images.append(fake[0])
++            controls.append(dict(window_id=datasets['expression_cut'].rows[index]['window_id'],
++                                 requested=[.1,.5,.9],measured=q))
++            if index==0:control_images=images
++    deltas=np.array([c['measured'][-1]-c['measured'][0] for c in controls])
++    control_summary=dict(mean_high_minus_low=float(deltas.mean()),
++                         fraction_high_above_low_by_1pp=float((deltas>.01).mean()),
++                         fraction_monotone=float(np.mean([c['measured'][0]<=c['measured'][1]<=c['measured'][2] for c in controls])))
++    try:
++        fit_and_certify(enhanced,enhanced,dict(training_groups=metadata['expression_cut']['training_groups'],
++                                             generator_hash=sha256(paths['expression_cut']),risk_hash=sha256(risk_path)))
++        raise AssertionError('The attachment must not certify independent risk.')
++    except ValueError as e:calibration_reason=str(e)
++    accepted,gate_reason=gate([r['score'] for r in enhanced],None,sha256(paths['expression_cut']),sha256(risk_path))
++    from .cli import predict_image
++    infer_rows=predict_image(he_path,paths['expression_cut'],risk_path,out/'he_only_inference')
++    sample_diversity=float(np.mean([float((o['samples'][0]-o['samples'][-1]).abs().mean()) for o in en_outputs]))
++    summary=dict(scope='single-pair in-sample software/overfitting feasibility only; not MIST test effectiveness',
++        n_pairs=1,n_source_groups=1,groups_verified_as_patients=False,windows=len(rows),valid_windows=sum(r['valid'] for r in rows),
++        same_coordinate_pairs=all(r['he_bbox']==r['ihc_bbox'] for r in rows),window=128,
++        tests=test_info,default_width64_six_blocks_tested=True,micro_training_width=8,residual_blocks=6,
++        training_steps_per_model=steps,initial=initial,final={n:metric_summary(r) for n,r in records.items()},
++        local_proxy_conflict_candidates=len(candidates),formal_cross_patient_challenges=0,
++        conditional_control=control_summary,mean_sample_rgb_difference_minus1to1=sample_diversity,
++        independent_calibration=dict(status='not_possible',reason=calibration_reason,certificate=None),
++        gate=dict(reason=gate_reason,accepted=int(accepted.sum()),total=len(accepted)),
++        he_only_inference=dict(ihc_accessed=False,accepted=sum(r['accepted'] for r in infer_rows)),
++        elapsed_seconds=time.monotonic()-start)
++    enrich_summary(out,summary,enhanced,controls)
++    for name,rr in records.items():dump(out/(name+'_window_results.json'),rr)
++    dump(out/'condition_sweep.json',controls);dump(out/'verification.json',summary)
++    figures(out,rows,records,outputs,logs,control_images,controls,candidates,he_path,ihc_path)
++    report(out,summary,rows)
++    print('COMPLETE',json.dumps(summary,ensure_ascii=False),flush=True)
++    return summary
++
++
++def enrich_summary(out,summary,records,controls):
++    from sklearn.metrics import roc_auc_score
++    events=np.array([r['event'] for r in records]);scores=np.array([r['score'] for r in records])
++    summary['raw_risk_in_sample']=dict(brier=float(np.mean((scores-events)**2)),
++        auroc=float(roc_auc_score(events,scores)) if len(np.unique(events))==2 else None,
++        calibrated=False,independent_validation=False)
++    summary['conditional_control']['requested_high_minus_low']=.8
++    summary['conditional_control']['mean_condition_absolute_error']=float(np.mean([
++        np.abs(np.array(c['measured'])-np.array(c['requested'])).mean() for c in controls]))
++    summary['conditional_control']['interpretation']='monotone response measured; amplitude remains far below requested span; effective controllability not established'
++    first=Path(out).parent/'round1_bottleneck_film/verification.json'
++    if first.exists():
++        previous=json.loads(first.read_text())
++        summary['architecture_comparison']=dict(
++            bottleneck_only_mae=previous['final']['expression_cut']['mae'],
++            bottleneck_only_high_minus_low=previous['conditional_control']['mean_high_minus_low'],
++            decoder_film_mae=summary['final']['expression_cut']['mae'],
++            decoder_film_high_minus_low=summary['conditional_control']['mean_high_minus_low'],
++            interpretation='control response increased while proxy MAE worsened; exploratory same-image comparison')
++
++
++def figures(out,rows,records,outputs,logs,control_images,controls,candidates,he_path,ihc_path):
++    plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'axes.spines.top':False,'axes.spines.right':False})
++    he=np.array(Image.open(he_path).convert('RGB'));ihc=np.array(Image.open(ihc_path).convert('RGB'))
++    by_id={r['window_id']:r for r in rows};all_ids=[r['window_id'] for r in rows if r['valid']]
++    stitched={}
++    for name,oo in outputs.items():
++        array=np.full_like(he,220)
++        for o in oo:
++            x,y,w,h=by_id[o['id']]['he_bbox'];array[y:y+h,x:x+w]=to_rgb(o['fake'])
++        stitched[name]=array;save_png(out/(name+'_RESEARCH_ONLY.png'),Image.fromarray(array))
++    fig,axes=plt.subplots(2,3,figsize=(13,8.5),layout='constrained')
++    for ax,img,title in zip(axes.flat[:4],[he,ihc,stitched['cut'],stitched['expression_cut']],
++         ['Input H&E / automatic 8 x 8 grid','Real IHC / identical coordinates',
++          'CUT / attachment overfit only','Extended CUT / attachment overfit only']):
++        ax.imshow(img);ax.set_title(title);ax.axis('off')
++    for ax in axes.flat[:2]:
++        for p in range(0,1025,128):ax.axhline(p-.5,color='#117c91',lw=.5);ax.axvline(p-.5,color='#117c91',lw=.5)
++    error=np.full((8,8),np.nan)
++    for r in records['expression_cut']:
++        x,y,_,_=by_id[r['window_id']]['he_bbox'];error[y//128,x//128]=r['error']
++    ax=axes[1,1];im=ax.imshow(error,vmin=0,vmax=max(.2,float(np.nanmax(error))),cmap='magma')
++    ax.set_title('Post-hoc true proxy error / not confidence');ax.set_xlabel('Window column');ax.set_ylabel('Window row')
++    fig.colorbar(im,ax=ax,label='Absolute DAB area-fraction error',shrink=.7)
++    ax=axes[1,2];ax.imshow(Image.open(out/'he_only_inference/selective_display.png'))
++    ax.set_title('Automatic gate: 0 / 64 released\nNo independent certificate');ax.axis('off')
++    fig.suptitle('Real computation on one supplied image pair / no held-out patients',fontsize=14)
++    save_figure(out/'overview.png',fig);plt.close(fig)
++    fig,axes=plt.subplots(1,3,figsize=(13,3.7),layout='constrained')
++    for name,color in [('cut','#70747c'),('expression_cut','#117c91')]:
++        values=[l['G'] for l in logs[name]];axes[0].plot(range(1,len(values)+1),values,label=name,color=color)
++    axes[0].set(xlabel='Optimization step',ylabel='Generator objective',title='Different loss objectives; inspect within each run');axes[0].legend()
++    q=[r['q_reference'] for r in records['cut']]
++    for name,color in [('cut','#70747c'),('expression_cut','#117c91')]:
++        axes[1].scatter(q,[r['q_generated'] for r in records[name]],s=14,alpha=.65,label=name,color=color)
++    axes[1].plot([0,1],[0,1],ls='--',c='#888');axes[1].set(xlabel='Reference DAB area fraction',ylabel='Generated DAB area fraction',title='All 64 training-image windows',xlim=(-.03,1.03),ylim=(-.03,1.03));axes[1].legend()
++    for c in controls:axes[2].plot([.1,.5,.9],c['measured'],color='#117c91',alpha=.16)
++    axes[2].plot([.1,.5,.9],np.array([c['measured'] for c in controls]).mean(0),color='#bd7620',lw=3,label='Mean over all windows')
++    axes[2].set(xlabel='Requested conditional fraction',ylabel='Measured generated fraction',title='Learned FiLM response / no manual recoloring',ylim=(-.03,1.03));axes[2].legend()
++    save_figure(out/'training_and_control.png',fig);plt.close(fig)
++    fig,axes=plt.subplots(2,3,figsize=(11,7),layout='constrained')
++    first=outputs['expression_cut'][0];rr=records['expression_cut'][0]
++    for ax,img,title in zip(axes[0],[to_rgb(first['he']),to_rgb(first['reference']),first['pixel_probability'][0].numpy()],
++                           ['Automatic first valid H&E window','Same-coordinate real IHC','Learned pixel DAB proxy / not cell truth']):
++        ax.imshow(img,vmin=0,vmax=1,cmap='viridis');ax.set_title(title);ax.axis('off')
++    for i,(ax,img) in enumerate(zip(axes[1],control_images)):
++        ax.imshow(to_rgb(img));ax.set_title(f"G condition {[.1,.5,.9][i]:.1f}; measured {controls[0]['measured'][i]:.3f}");ax.axis('off')
++    fig.suptitle('Fixed first window / conditional images come from the trained generator')
++    save_figure(out/'posterior_and_samples.png',fig);plt.close(fig)
++    if candidates:
++        pair=candidates[0];a,b=by_id[pair['a']],by_id[pair['b']]
++        fig,axes=plt.subplots(2,2,figsize=(8,8),layout='constrained')
++        for row,axrow in zip([a,b],axes):
++            x,y,w,h=row['he_bbox']
++            for ax,img,label in zip(axrow,[he,ihc],['H&E','Real IHC']):
++                ax.imshow(img[y:y+h,x:x+w]);ax.axis('off')
++                ax.set_title(f"{label} {row['window_id'].split(':')[-1]} / [{x},{y},{w},{h}]\nreference proxy q={row['q']:.3f}")
++        fig.suptitle(f"Automatic local proxy-conflict candidate / distance={pair['distance']:.3f}\nOne source pair; not a confirmed protein-expression contradiction")
++        save_figure(out/'challenge_candidate.png',fig);plt.close(fig)
++    fig,axes=plt.subplots(1,3,figsize=(12,3.8),layout='constrained')
++    r=records['expression_cut'];score=np.array([x['score'] for x in r]);error=np.array([x['error'] for x in r])
++    axes[0].scatter(score,error,s=20,c='#117c91');axes[0].axhline(.1,ls='--',c='#bd7620')
++    axes[0].set(xlabel='Raw learned error score',ylabel='Post-hoc proxy error',title='In-sample diagnostic / uncalibrated')
++    from .calibration import fixed_coverage_report
++    curve=fixed_coverage_report(r,np.linspace(.1,1,10))
++    axes[1].plot([x['coverage'] for x in curve],[x['risk'] for x in curve],marker='o',c='#117c91')
++    axes[1].set(xlabel='Fraction of windows retained',ylabel='Error-event rate (absolute error > 0.10)',title='In-sample curve / no certified guarantee',ylim=(-.03,1.03))
++    axes[2].axis('off');axes[2].text(.02,.85,'Independent source groups: 1\nVerified patient identities: 0\nIndependent calibration A: unavailable\nIndependent certification B: unavailable\n\nCertified release: 0 / 64\nH&E-only inference: executed\nMissing certificate => automatic refusal',va='top',linespacing=1.8)
++    save_figure(out/'risk_and_refusal.png',fig);plt.close(fig)
++
++
++def report(out,s,rows):
++    a=s['initial']['expression_cut'];b=s['final']['expression_cut'];base=s['final']['cut'];ctrl=s['conditional_control']
++    scope='两张附件构成一个图像对；所有训练与数值评估均来自这个图像对。以下仅为软件可行性和样本内拟合证据，未运行完整 MIST 测试，也没有独立患者有效性结论。'
++    steps=[
++      ('1.1 全图分窗','已运行',f"{s['windows']} 对 128×128 窗；全部 he_bbox == ihc_bbox，覆盖原图一次",'manifest.py / 同坐标与覆盖率测试'),
++      ('1.2 同窗质量检查','已运行',f"{s['valid_windows']} 对通过固定前景/结构门槛；无位移或位置搜索",'manifest.py / 每窗 reason 日志'),
++      ('1.3 实染参考统计','已运行','H–DAB 分解；固定 H&E 掩膜作共同分母；NumPy 与 Torch 测量一致','statistics.py / 数值一致性测试'),
++      ('1.4 形态表征与聚类','已运行','H&E 特征标准化、自动选 K；正式流程只在 train 拟合','challenge.py / morphology.json'),
++      ('1.5 冲突候选检索','局部可行',f"检出 {s['local_proxy_conflict_candidates']} 个局部染色代理冲突候选；跨患者挑战对 0",'challenge.py / local_challenge_candidates.json'),
++      ('1.6 可预测边界报告','待独立验证','已输出逐窗真实误差及覆盖率曲线；当前曲线仅属样本内诊断','runner.py / 两组 window_results.json'),
++      ('2.1 自动目标与读取','已运行','随机 B 与 paired_B 分离；配对裁剪同步；参考统计映射到 5 个分箱','expression_pair_dataset.py / 随机 B 不污染参考测试'),
++      ('2.2 H&E 分布预测头','样本内已运行',f"分箱对数损失 {a['bin_log_loss']:.4f} → {b['bin_log_loss']:.4f}；尚非校准后验",'expression_cut_model.py / 真实梯度及条件不泄漏测试'),
++      ('2.3 像素概率辅助头','代理可行','使用自动 DAB 像素伪标签；输出不是细胞蛋白阳性概率','networks.py / pixel_proxy 非零梯度测试'),
++      ('2.4 六残差块 + FiLM','控制幅度不足',f"64 通道默认骨干前后向通过；微型训练 8 通道、6 残差块；高低条件平均差 {ctrl['mean_high_minus_low']:.4f}，条件指定跨度为 0.8",'networks.py / 宽度 64 测试及 condition_sweep.json'),
++      ('2.5 分布采样生成','已运行',f"每窗 3 个真实 G 样本；首末样本平均 RGB 差 {s['mean_sample_rgb_difference_minus1to1']:.6f}（[-1,1] 尺度）",'runner.py / generated_batch，无手工染色'),
++      ('2.6 条件一致性评价','尚未充分满足',f"高条件比低条件至少增加 1 个百分点的窗口比例 {ctrl['fraction_high_above_low_by_1pp']:.1%}；有响应但远未充分跟随指定染色量",'condition_sweep.json / 全部 64 窗'),
++      ('3.1 来源分组与防泄漏','已运行','按 group_id、pair_id 和图像内容哈希检查跨 split 重叠；附件不拆成独立患者','manifest.py / 内容泄漏与单来源测试'),
++      ('3.2 自动错误事件','已运行','固定 δ=0.10；事件为同坐标区域 DAB 面积率绝对误差超限','runner.py / 每窗 event'),
++      ('3.3 错误预测器 h','样本内已运行',f"冻结 G 后训练 h；只输入 H&E、生成图和采样差异；样本内 AUROC={s.get('raw_risk_in_sample',{}).get('auroc')}，未经独立校准",'networks.py / ErrorPredictor 接口与梯度测试'),
++      ('3.4 概率校准 A','数据不足','实现保序校准；本附件不能拟合独立组校准器，未输出伪校准结果','calibration.py / tests.txt 中合成单元夹具仅测软件'),
++      ('3.5 风险认证 B','数据不足','实现固定候选阈值、Bonferroni 单侧二项上界；每个独立组固定种子抽 1 窗','calibration.py / 无临床或全像素风险保证'),
++      ('3.6 自动拒绝及 H&E 推理','已运行','仅输入 H&E 已完成推理；缺独立认证时 0/64 放行，拒绝不代表阴性','cli.py / he_only_inference/prediction.json')]
++    dump(out/'step_evidence.json',[dict(step=x[0],status=x[1],evidence=x[2],source=x[3]) for x in steps])
++    md=f'''# CUT 表达边界扩展：附件实跑报告
++
++{scope}
++
++## 已测量结果
++
++| 项目 | 实测 |
++|---|---|
++| 同坐标窗 | {s['windows']} 对；质量通过 {s['valid_windows']} 对 |
++| 自动测试 | {s['tests']['run']} 项，失败 {s['tests']['failures']}，错误 {s['tests']['errors']} |
++| 六块骨干 | 默认 ngf=64 前后向通过；微型训练 ngf=8 |
++| 每个模型训练量 | {s['training_steps_per_model']} 步，batch=4，CPU；相同初始骨干种子、同一批序列 |
++| 原版 CUT 样本内区域 MAE | {base['mae']:.5f} |
++| 扩展 CUT 样本内区域 MAE | {b['mae']:.5f} |
++| 扩展分箱对数损失 | {a['bin_log_loss']:.5f} → {b['bin_log_loss']:.5f} |
++| 高/低条件生成面积率差 | 平均 {ctrl['mean_high_minus_low']:.5f} |
++| 真正模型样本差异 | {s['mean_sample_rgb_difference_minus1to1']:.6f}，不代表校准置信度 |
++| 独立认证放行 | 0/{s['valid_windows']}；未创建认证文件 |
++
++MAE 和 δ 的单位是区域 DAB 阳性像素面积率，0.10 等于 10 个百分点。它们不是 HER2 临床评分或细胞阳性率。两种生成器的总损失包含不同项，不能通过总损失大小比较模型优劣。全部结果照实保留，不按测试效果选窗口或 checkpoint。条件高低差仍远小于请求跨度 0.8，可控生成的有效性尚未充分建立。生成图仍存在明显色彩与染色定位偏差；区域统计误差下降不能证明已经生成可判读的虚拟 IHC。
++
++## 每一步的证据
++
++| 步骤 | 状态 | 实测 / 限制 | 对应文件 |
++|---|---|---|---|
++'''+''.join('| '+' | '.join(x)+' |\n' for x in steps)+'''
++## 如何解释有效性
++
++代码可执行、真实数据可反传、分布头能否拟合、FiLM 是否响应条件，均可由本例检查。若相应实测不达标，应视为负结果，不把“有梯度”写成“已证明有效”。样本内拟合和局部候选不支持患者级性能、不确定性校准或形态决定蛋白状态的结论。像素辅助头只有自动染色伪标签，不能替代细胞标注。
++
++完整验证需输入 MIST 配对清单和可靠来源组元数据；官方测试来源保持隔离，训练、开发、错误预测器训练、校准 A、认证 B 分组隔离。当前代码中的二项认证对象是“每独立来源组均匀抽取一个有效窗”的平均风险；它不保证所有窗、所有细胞或全部像素的错误率。来源只到切片时，结论也只到切片分组。
++
++正式实验需要比较 CUT、加分布头、加条件生成和完整门控；报告普通集/自动冲突集的分组置信区间，以及固定覆盖率 50%/80%/100% 的错误率、总拒绝率。没有独立实染参考或未训练校准器时，系统不发布可信表达图。
++
++复现命令、正式训练路径和输入清单格式见项目根目录 README_EXPRESSION_CN.md。原始逐窗结果、训练日志、完整模块测试及权重随代码包提供。
++'''
++    comparison=s.get('architecture_comparison')
++    comparison_text=''
++    if comparison:
++        comparison_text=f"瓶颈 FiLM 初轮：MAE {comparison['bottleneck_only_mae']:.5f}，高低条件差 {comparison['bottleneck_only_high_minus_low']:.5f}；增加末次归一化后 FiLM：MAE {comparison['decoder_film_mae']:.5f}，高低条件差 {comparison['decoder_film_high_minus_low']:.5f}。条件响应增强，同时区域 MAE 变差。两轮均为探索性样本内实验，失败对照完整保留。"
++        md+='\n## 架构调整的实测代价\n\n'+comparison_text+'\n'
++    (out/'verification_report.md').write_text(md)
++    tr=''.join('<tr>'+''.join('<td>'+html.escape(v)+'</td>' for v in row)+'</tr>' for row in steps)
++    images=[]
++    for name,caption in [('overview.png','整图结果：64 对同坐标窗、真实 G 输出、真实误差与自动拒绝'),
++                         ('training_and_control.png','训练轨迹、样本内实染统计一致性与 FiLM 条件响应'),
++                         ('challenge_candidate.png','自动冲突候选：每个 H&E 窗仍对应自身同坐标 IHC'),
++                         ('posterior_and_samples.png','固定首个窗：像素伪标签概率与实际条件生成'),
++                         ('risk_and_refusal.png','错误预测诊断与认证缺失时的自动拒绝')]:
++        if (out/name).exists():
++            encoded=base64.b64encode((out/name).read_bytes()).decode()
++            images.append(f'<figure><figcaption>{caption}</figcaption><img src="data:image/png;base64,{encoded}" alt="{caption}"></figure>')
++    body=f'''<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>CUT 表达边界：真实附件验证</title>
++<style>body{{font-family:system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 18px;color:#202a32;line-height:1.65}}h1{{font-size:28px}}h2{{margin-top:32px}}img{{width:100%;height:auto}}figure{{margin:28px 0}}figcaption{{font-weight:600}}table{{border-collapse:collapse;width:100%}}th,td{{text-align:left;border-bottom:1px solid #d4dce2;padding:10px;vertical-align:top}}.scroll{{overflow-x:auto}}.note{{border-left:4px solid #bd7620;padding:8px 16px;background:#fbf6ed}}code{{overflow-wrap:anywhere}}@media(max-width:600px){{h1{{font-size:23px}}td,th{{padding:7px;font-size:13px}}}}</style>
++<h1>CUT 表达边界：代码实现与真实附件验证</h1><p class="note">{scope}</p>
++<p>64 对同坐标窗口 · {s['tests']['run']} 项自动测试通过 · 每个模型 {s['training_steps_per_model']} 步 CPU 微型训练 · 0 个独立患者验证</p>
++<h2>实测结果</h2><p>区域 DAB 面积率 MAE：原版 CUT <b>{base['mae']:.5f}</b>，扩展 CUT <b>{b['mae']:.5f}</b>。扩展头分箱对数损失：{a['bin_log_loss']:.5f} → {b['bin_log_loss']:.5f}。这些数值均来自同一训练图像对。</p>
++{''.join(images)}<h2>三个创新点：18 步证据表</h2><div class="scroll"><table><thead><tr><th>步骤</th><th>状态</th><th>证据及限制</th><th>来源</th></tr></thead><tbody>{tr}</tbody></table></div>
++<h2>当前结论</h2><p>本次验证了代码执行与样本内学习能力。条件响应、样本差异和原始风险分数均按真实运算呈现；它们不等于生物学表达真值或校准置信度。完整 MIST、已训练基线、可靠来源 ID 和独立实染验证尚未提供，患者级有效性与风险保证保持未验证。</p>
++<p>生成图仍存在明显色彩与染色定位偏差；区域统计误差下降不能证明已经生成可判读的虚拟 IHC。条件响应幅度仍远小于请求跨度，可控生成尚未充分满足一致性要求。</p>
++<p>{comparison_text}</p><p>二项认证针对每个独立来源组随机抽一个有效窗的平均风险，不针对全部细胞或像素。默认六残差块 ngf=64 已通过前后向检查；本例微型训练使用 ngf=8。缺少独立认证时，全图自动遮罩。</p></html>'''
++    (out/'verification_report.html').write_text(body)
+--- a/models/cut_model.py
++++ b/models/cut_model.py
+@@ -16,7 +16,7 @@
+     https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix
+     """
+     @staticmethod
+-    def modify_commandline_options(parser, is_train=True):
++    def modify_commandline_options(parser, is_train=True, command_line=None):
+         """  Configures options specific for CUT model
+         """
+         parser.add_argument('--CUT_mode', type=str, default="CUT", choices='(CUT, cut, FastCUT, fastcut)')
+@@ -38,7 +38,7 @@
+ 
+         parser.set_defaults(pool_size=0)  # no image pooling
+ 
+-        opt, _ = parser.parse_known_args()
++        opt, _ = parser.parse_known_args(command_line)
+ 
+         # Set default parameters for CUT and FastCUT
+         if opt.CUT_mode.lower() == "cut":
+--- /dev/null
++++ b/models/expression_cut_model.py
+@@ -0,0 +1,94 @@
++"""CUT + regional DAB-distribution head + FiLM + explicit proxy supervision."""
++import torch
++from torch.nn import functional as F
++from .cut_model import CUTModel
++from expression.networks import ConditionalGenerator
++from expression.statistics import StainStatistics, masked_mean
++from util.util import str2bool
++
++
++class ExpressionCUTModel(CUTModel):
++    @staticmethod
++    def modify_commandline_options(parser,is_train=True,command_line=None):
++        parser=CUTModel.modify_commandline_options(parser,is_train,command_line)
++        parser.add_argument('--stats_window',type=int,default=128)
++        parser.add_argument('--lambda_distribution',type=float,default=1.)
++        parser.add_argument('--lambda_statistics',type=float,default=10.)
++        parser.add_argument('--lambda_moment',type=float,default=0.,help='Experimental; disabled after multi-pair regression.')
++        parser.add_argument('--teacher_probability',type=float,default=1.,help='Experimental prediction mixing when below 1.')
++        parser.add_argument('--learn_bin_means',type=str2bool,default=False,help='Experimental within-bin representatives.')
++        parser.add_argument('--lambda_pixel_proxy',type=float,default=.1,
++                            help='Pixel DAB pseudo-label loss, not cell-positive supervision.')
++        parser.add_argument('--lambda_paired_l1',type=float,default=0.)
++        parser.add_argument('--backbone_checkpoint',default='')
++        parser.set_defaults(netG='resnet_6blocks',dataset_mode='expression_pair',preprocess='none')
++        return parser
++
++    def __init__(self,opt):
++        if opt.netG!='resnet_6blocks' or opt.flip_equivariance:
++            raise ValueError('This implementation requires resnet_6blocks and loader-synchronized flips.')
++        if not 0<=getattr(opt,'teacher_probability',.5)<=1:raise ValueError('Teacher probability must lie in [0,1].')
++        super().__init__(opt)
++        if opt.backbone_checkpoint:
++            self.netG.load_state_dict(torch.load(opt.backbone_checkpoint,map_location=self.device,weights_only=True))
++        self.netG=ConditionalGenerator(self.netG,opt.ngf*4,opt.stats_window,learn_bin_means=getattr(opt,'learn_bin_means',False)).to(self.device)
++        self.training_progress=0.
++        self.statistic=StainStatistics(opt.stats_window).to(self.device)
++        self.loss_names+=['distribution','moment','statistics','pixel_proxy','paired_l1']
++        if self.isTrain:
++            # The original optimizer predates the new heads; rebuild it explicitly.
++            old_optimizer=self.optimizer_G
++            self.optimizer_G=torch.optim.Adam(self.netG.parameters(),lr=opt.lr,betas=(opt.beta1,opt.beta2))
++            self.optimizers=[self.optimizer_G if o is old_optimizer else o for o in self.optimizers]
++
++    def set_input(self,data):
++        super().set_input(data)
++        if data['bbox'].shape!=data['paired_bbox'].shape or not torch.equal(data['bbox'],data['paired_bbox']):
++            raise ValueError('Paired reference coordinates changed.')
++        self.paired_B=data['paired_B'].to(self.device)
++        self.fixed_mask=data['tissue_mask'].to(self.device)
++        with torch.no_grad():
++            self.target_q,self.valid=self.statistic(self.paired_B,self.fixed_mask)
++
++    def data_dependent_initialize(self,data):
++        # Keep all synchronized tensors together; the original method slices only A/B.
++        self.set_input(data);self.forward()
++        if self.isTrain:
++            self.compute_D_loss().backward();self.compute_G_loss().backward()
++            if self.opt.lambda_NCE>0:
++                self.optimizer_F=torch.optim.Adam(self.netF.parameters(),lr=self.opt.lr,betas=(self.opt.beta1,self.opt.beta2))
++                self.optimizers.append(self.optimizer_F)
++
++    def forward(self):
++        teacher=self.target_q if self.isTrain else None
++        teacher_mask=None
++        if self.isTrain:
++            # First 20%: establish the statistic-to-color mapping. Then gradually
++            # expose G to its H&E-only predicted conditions, as used at deployment.
++            progress=min(1.,max(0.,(self.training_progress-.2)/.6))
++            probability=1-progress*(1-getattr(self.opt,'teacher_probability',1.))
++            teacher_mask=torch.ones_like(teacher,dtype=torch.bool) if probability>=1 else torch.rand_like(teacher)<probability
++        self.fake_B,self.expression_aux=self.netG(self.real_A,condition=teacher,teacher_mask=teacher_mask,return_aux=True)
++        if self.opt.nce_idt and self.isTrain:
++            # Identity branch remains separate from the H&E posterior supervision.
++            with torch.no_grad():
++                idt_mask=torch.ones_like(self.real_B[:,:1])
++                idt_q,_=self.statistic(self.real_B,idt_mask)
++            self.idt_B=self.netG(self.real_B,condition=idt_q)
++
++    def compute_G_loss(self):
++        original=super().compute_G_loss()
++        cross_entropy=F.cross_entropy(self.expression_aux['logits'],self.statistic.bins(self.target_q),reduction='none')
++        self.loss_distribution=masked_mean(cross_entropy,self.valid.squeeze(1))*self.opt.lambda_distribution
++        self.loss_moment=masked_mean((self.expression_aux['expected_condition']-self.target_q).abs(),self.valid)*getattr(self.opt,'lambda_moment',0.)
++        generated_q,_=self.statistic(self.fake_B,self.fixed_mask,soft=True)
++        self.loss_statistics=masked_mean((generated_q-self.expression_aux['condition']).abs(),self.valid)*self.opt.lambda_statistics
++        pixel_target=(self.statistic.dab(self.paired_B)>.20).float()
++        pixel_loss=F.binary_cross_entropy_with_logits(self.expression_aux['pixel_logits'],pixel_target,reduction='none')
++        self.loss_pixel_proxy=masked_mean(pixel_loss,self.fixed_mask)*self.opt.lambda_pixel_proxy
++        self.loss_paired_l1=masked_mean((self.fake_B-self.paired_B).abs().mean(1,keepdim=True),self.fixed_mask)*self.opt.lambda_paired_l1
++        self.loss_G=original+self.loss_distribution+self.loss_moment+self.loss_statistics+self.loss_pixel_proxy+self.loss_paired_l1
++        return self.loss_G
++
++    def set_training_progress(self,fraction):
++        self.training_progress=min(1.,max(0.,float(fraction)))
+--- /dev/null
++++ b/requirements-expression.txt
+@@ -0,0 +1,11 @@
++# Install a CPU/CUDA build of torch and torchvision matching your hardware first.
++torch==2.7.1
++torchvision==0.22.1
++numpy==2.3.5
++scipy==1.17.0
++scikit-learn==1.8.0
++Pillow==12.3.0
++matplotlib==3.10.8
++packaging>=23
++dominate==2.9.1
++# Original train.py additionally uses the upstream requirements.txt GUI packages.
+--- /dev/null
++++ b/tests/test_expression.py
+@@ -0,0 +1,129 @@
++"""Real attachment integration tests plus clearly synthetic calibration unit fixtures."""
++import copy
++import json
++from pathlib import Path
++import unittest
++import tempfile
++import numpy as np
++import torch
++from torch.utils.data import DataLoader
++from expression.manifest import read_manifest,check_leakage
++from expression.statistics import StainStatistics
++from expression.runner import seed_everything,make_options,make_dataset
++from expression.networks import ErrorPredictor
++from expression.calibration import fit_and_certify,gate,representative_per_group
++from models.expression_cut_model import ExpressionCUTModel
++from models.networks import ResnetBlock
++from expression.protocol import policy_hash
++
++MANIFEST=Path('artifacts/attachment/manifest.jsonl')
++
++
++class AttachmentTests(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        seed_everything();cls.rows=read_manifest(MANIFEST)
++        cls.opt=make_options(MANIFEST,'artifacts/test','expression_cut','demo',ngf=8,batch_size=2,learn_bin_means=True,lambda_moment=2.)
++        cls.dataset=make_dataset(cls.opt)
++
++    def test_full_grid_identity_and_coverage(self):
++        cover=np.zeros((1024,1024),dtype=int)
++        for r in self.rows:
++            self.assertEqual(r['he_bbox'],r['ihc_bbox']);x,y,w,h=r['he_bbox'];cover[y:y+h,x:x+w]+=1
++        self.assertEqual(len(self.rows),64);self.assertTrue(np.all(cover==1))
++
++    def test_paired_reference_survives_random_B(self):
++        first=self.dataset[7]
++        for _ in range(4):
++            other=self.dataset[7]
++            self.assertTrue(torch.equal(first['paired_B'],other['paired_B']))
++            self.assertTrue(torch.equal(other['bbox'],other['paired_bbox']))
++        real_ref,_=self.dataset.crop(self.dataset.rows[7],'ihc')
++        self.assertTrue(torch.equal(first['paired_B'],real_ref))
++
++    def test_numpy_torch_measurement_agree(self):
++        s=StainStatistics()
++        for i in range(0,len(self.dataset),5):
++            sample=self.dataset[i];q,valid=s(sample['paired_B'][None],sample['tissue_mask'][None])
++            self.assertTrue(bool(valid.all()));self.assertAlmostEqual(float(q),self.dataset.rows[i]['q'],places=4)
++
++    def test_empty_tissue_is_invalid(self):
++        q,valid=StainStatistics()(torch.zeros(1,3,128,128),torch.zeros(1,1,128,128))
++        self.assertFalse(bool(valid.any()));self.assertTrue(bool(torch.isfinite(q).all()))
++
++    def test_teacher_cannot_change_distribution(self):
++        model=ExpressionCUTModel(self.opt);g=model.netG.eval();a=self.dataset[0]['A'][None]
++        with torch.no_grad():
++            lo,auxlo=g(a,condition=torch.full((1,1,1,1),.1),return_aux=True)
++            hi,auxhi=g(a,condition=torch.full((1,1,1,1),.9),return_aux=True)
++            plain=g.backbone(a)
++        self.assertTrue(torch.equal(auxlo['logits'],auxhi['logits']))
++        self.assertTrue(torch.equal(auxlo['pixel_logits'],auxhi['pixel_logits']))
++        self.assertTrue(torch.equal(auxlo['expected_condition'],auxhi['expected_condition']))
++        self.assertTrue(torch.allclose(lo,plain,atol=1e-6))
++        self.assertTrue(torch.allclose(auxlo['probabilities'].sum(1),torch.ones(1,1,1)))
++
++    def test_all_new_modules_receive_real_image_gradients(self):
++        model=ExpressionCUTModel(self.opt);batch=next(iter(DataLoader(self.dataset,batch_size=2)))
++        before=model.netG.film[-1].weight.detach().clone()
++        model.data_dependent_initialize(batch);model.set_input(batch);model.optimize_parameters()
++        for name,module in [('distribution',model.netG.distribution_head),('within_bin',model.netG.within_bin_head),('film',model.netG.film),
++                            ('decoder_film',model.netG.decoder_film),
++                            ('pixel_proxy',model.netG.pixel_head),('backbone',model.netG.backbone),('NCE_projector',model.netF)]:
++            gradients=[p.grad for p in module.parameters() if p.grad is not None]
++            self.assertTrue(gradients,name);self.assertTrue(all(torch.isfinite(g).all() for g in gradients),name)
++            self.assertGreater(sum(float(g.abs().sum()) for g in gradients),0,name)
++        self.assertFalse(torch.equal(before,model.netG.film[-1].weight))
++
++    def test_default_width64_six_blocks_forward_and_backward(self):
++        opt=make_options(MANIFEST,'artifacts/test64','expression_cut','demo',ngf=64,batch_size=1)
++        model=ExpressionCUTModel(opt)
++        self.assertEqual(sum(isinstance(m,ResnetBlock) for m in model.netG.backbone.model),6)
++        sample=self.dataset[0];out,aux=model.netG(sample['A'][None],return_aux=True)
++        loss=out.square().mean()+aux['logits'].square().mean();loss.backward()
++        self.assertEqual(tuple(out.shape),(1,3,128,128));self.assertEqual(tuple(aux['probabilities'].shape),(1,5,1,1))
++        self.assertTrue(torch.isfinite(model.netG.backbone.model[1].weight.grad).all())
++
++    def test_error_head_interface_needs_no_IHC(self):
++        h=ErrorPredictor();a=self.dataset[0]['A'][None];fake=torch.zeros_like(a);variance=torch.zeros_like(a[:,:1])
++        logits=h(a,fake,variance);logits.sum().backward()
++        self.assertEqual(tuple(logits.shape),(1,1,1,1));self.assertTrue(torch.isfinite(logits).all())
++
++    def test_same_image_content_cannot_cross_splits(self):
++        a=copy.deepcopy(self.rows[0]);b=copy.deepcopy(self.rows[1])
++        b.update(group_id='different_name',pair_id='different_pair',split='test')
++        with self.assertRaises(ValueError):check_leakage([a,b])
++        b['split']=a['split']
++        with self.assertRaises(ValueError):check_leakage([a,b])
++
++    def test_manifest_rejects_changed_image_content(self):
++        row=copy.deepcopy(self.rows[0]);row['he_sha256']='0'*64
++        with tempfile.TemporaryDirectory() as directory:
++            manifest=Path(directory)/'invalid.jsonl';manifest.write_text(json.dumps(row)+'\n')
++            with self.assertRaisesRegex(ValueError,'content changed'):read_manifest(manifest)
++
++    def test_one_source_pair_cannot_become_many_calibration_groups(self):
++        rows=[dict(r,score=.2,event=0) for r in self.rows]
++        self.assertEqual(len(representative_per_group(rows)),1)
++        with self.assertRaises(ValueError):
++            fit_and_certify(rows,rows,dict(training_groups=[],generator_hash='g',risk_hash='h'))
++        allowed,reason=gate([.01,.9],None,'g','h')
++        self.assertFalse(allowed.any());self.assertEqual(reason,'missing_certificate')
++
++
++class StatisticalUnitFixtures(unittest.TestCase):
++    """These generated counts validate software, not the biological experiment."""
++    def test_certificate_bound_and_checkpoint_binding(self):
++        def fixture(split):
++            return [dict(group_id=f'{split}_{i}',group_kind='patient',split=split,
++                         window_id=f'{split}_{i}:R1C1',score=i/100,event=0) for i in range(100)]
++        cert=fit_and_certify(fixture('calibrate'),fixture('certify'),
++            dict(training_groups=['train'],generator_hash='g',risk_hash='h',protocol_hash=policy_hash()))
++        self.assertTrue(cert['release_enabled']);self.assertLessEqual(cert['chosen']['upper'],.1)
++        allowed,reason=gate([.1,.9],cert,'stale_generator','h')
++        self.assertFalse(allowed.any());self.assertEqual(reason,'checkpoint_mismatch')
++        bad=fixture('certify');bad[0]['group_id']='calibrate_0'
++        with self.assertRaises(ValueError):fit_and_certify(fixture('calibrate'),bad,dict(training_groups=[]))
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tests/test_multipair_debug.py
+@@ -0,0 +1,118 @@
++"""Regressions exposed by six new pairs; no patient-level independence assumed."""
++import copy
++import json
++import sys
++import tempfile
++import unittest
++from pathlib import Path
++from unittest.mock import patch
++import numpy as np
++import torch
++from PIL import Image
++from torch.utils.data import DataLoader
++from expression.manifest import prepare,read_manifest
++from expression.runner import make_options,make_dataset,load_generator,load_risk,generated_batch,evaluate_generator,seed_everything
++from expression.calibration import gate,fit_and_certify
++from expression.protocol import policy_hash
++from models.expression_cut_model import ExpressionCUTModel
++from expression.artifact_io import save_png
++
++ROOT=Path(__file__).resolve().parents[1]
++BASE=ROOT/'artifacts/multipair_debug'
++
++
++class MultiPairRegressions(unittest.TestCase):
++    @classmethod
++    def setUpClass(cls):
++        seed_everything();cls.rows=read_manifest(BASE/'full_manifest.jsonl')
++        cls.opt=make_options(BASE/'train_manifest.jsonl',BASE/'test_tmp',split='demo',ngf=8,batch_size=2)
++
++    def test_faint_IHC_is_not_all_rejected(self):
++        for pid in ['2M_6_14','2M_9_19','2M_12_23','2M_13_15','2M_13_17']:
++            rows=[r for r in self.rows if r['pair_id']==pid]
++            self.assertEqual(len(rows),64);self.assertGreater(sum(r['valid'] for r in rows),50,pid)
++        missing=[r for r in self.rows if r['pair_id']=='2M_11_11' and r['reason']=='reference_unobserved']
++        self.assertGreater(len(missing),20)
++
++    def test_all_new_windows_keep_identity_coordinates(self):
++        self.assertEqual(len([r for r in self.rows if r['pair_id'].startswith('2M_')]),384)
++        for row in self.rows:self.assertEqual(row['he_bbox'],row['ihc_bbox'])
++
++    def test_factory_does_not_parse_host_program_argv(self):
++        with patch.object(sys,'argv',['unrelated_program','--ngf','NOT_AN_INTEGER','--help']):
++            opt=make_options(BASE/'train_manifest.jsonl',BASE/'test_tmp',split='demo',ngf=8)
++        self.assertEqual(opt.ngf,8)
++
++    def test_window_size_inferred_from_prepared_manifest(self):
++        pair=json.loads((BASE/'pairs.json').read_text())[0]
++        with tempfile.TemporaryDirectory() as directory:
++            manifest=Path(directory)/'window256.jsonl';prepare([pair],manifest,window=256)
++            opt=make_options(manifest,directory,split='demo',ngf=8)
++            self.assertEqual(opt.stats_window,256)
++            self.assertEqual(tuple(make_dataset(opt)[0]['A'].shape),(3,256,256))
++
++    def test_within_bin_mean_can_represent_near_zero(self):
++        opt=copy.deepcopy(self.opt);opt.learn_bin_means=True
++        model=ExpressionCUTModel(opt);g=model.netG.eval();a=make_dataset(self.opt)[0]['A'][None]
++        with torch.no_grad():
++            g.distribution_head.weight.zero_();g.distribution_head.bias.fill_(-20);g.distribution_head.bias[0]=20
++            g.within_bin_head.weight.zero_();g.within_bin_head.bias.fill_(-12)
++            _,aux=g(a,return_aux=True)
++        self.assertLess(float(aux['expected_condition']),.002)
++
++    def test_training_can_use_H_and_E_only_predicted_condition(self):
++        opt=copy.deepcopy(self.opt);opt.teacher_probability=0
++        model=ExpressionCUTModel(opt);batch=next(iter(DataLoader(make_dataset(opt),batch_size=2)))
++        model.set_input(batch);model.set_training_progress(1);model.forward()
++        self.assertTrue(torch.equal(model.expression_aux['condition'],model.expression_aux['expected_condition'].detach()))
++
++    def test_unvalidated_training_strategies_are_opt_in(self):
++        self.assertFalse(self.opt.learn_bin_means)
++        self.assertEqual(self.opt.lambda_moment,0.)
++        self.assertEqual(self.opt.teacher_probability,1.)
++
++    def test_MC_variance_is_invariant_to_renaming(self):
++        model,_,_=load_generator(ROOT/'artifacts/attachment/expression_cut/generator.pt')
++        a=make_dataset(self.opt)[0]['A'][None]
++        first=generated_batch(model.netG,a,['original_name'],samples=3)
++        renamed=generated_batch(model.netG,a,['renamed_copy'],samples=3)
++        self.assertTrue(torch.equal(first[1],renamed[1]));self.assertTrue(torch.equal(first[3],renamed[3]))
++        with self.assertRaisesRegex(ValueError,'protocol'):
++            load_risk(ROOT/'artifacts/attachment/expression_cut/risk.pt',ROOT/'artifacts/attachment/expression_cut/generator.pt')
++
++    def test_record_only_evaluation_retains_no_image_tensors(self):
++        ds=make_dataset(self.opt);ds.rows=ds.rows[:2]
++        model=ExpressionCUTModel(self.opt);seen=[]
++        records,outputs=evaluate_generator(model.netG,ds,samples=1,keep_outputs=False,output_callback=lambda o,r:seen.append(r['window_id']))
++        self.assertEqual(len(records),2);self.assertEqual(outputs,[]);self.assertEqual(len(seen),2)
++
++    def test_image_cache_is_bounded_and_owned_by_dataset(self):
++        ds=make_dataset(self.opt);paths=sorted({r[k] for r in ds.rows for k in ['he','ihc']})
++        for path in paths:ds.image(path)
++        misses=ds.cache_misses
++        for path in paths:ds.image(path)
++        self.assertEqual(ds.cache_misses,misses);self.assertEqual(ds.cache_hits,len(paths))
++        second=make_dataset(self.opt);self.assertEqual(len(second._images),0)
++        second.cache_limit=2
++        for path in paths:second.image(path)
++        self.assertLessEqual(len(second._images),2)
++
++    def test_stale_protocol_and_invalid_scores_are_rejected(self):
++        def fixture(split):
++            return [dict(group_id=f'{split}_{i}',group_kind='patient',split=split,
++                         window_id=str(i),score=i/100,event=0) for i in range(100)]
++        cert=fit_and_certify(fixture('calibrate'),fixture('certify'),dict(training_groups=[],generator_hash='g',risk_hash='h',protocol_hash=policy_hash()))
++        keep,_=gate([-1.,2.,float('nan')],cert,'g','h');self.assertFalse(keep.any())
++        cert['provenance']['protocol_hash']='old_policy'
++        keep,reason=gate([.1],cert,'g','h');self.assertFalse(keep.any());self.assertEqual(reason,'protocol_mismatch')
++
++    def test_large_PNG_roundtrip_is_complete_and_lossless(self):
++        source=Image.open(ROOT/'examples/multipair/2M2103108_13_17(2).jpg').convert('RGB')
++        with tempfile.TemporaryDirectory() as directory:
++            output=Path(directory)/'last_export.png';save_png(output,source)
++            restored=Image.open(output);restored.load()
++            self.assertTrue(np.array_equal(np.array(source),np.array(restored)))
++            self.assertFalse(output.with_name(output.name+'.tmp').exists())
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tests/test_proof_audit.py
+@@ -0,0 +1,93 @@
++"""Independent regression checks; synthetic fixtures are never biological evidence."""
++import copy
++import tempfile
++import unittest
++from pathlib import Path
++import numpy as np
++from scipy.stats import beta
++from expression.challenge import retrieve,fit_morphology
++from expression.calibration import fit_and_certify,gate
++from expression.manifest import read_manifest
++from expression.protocol import policy_hash
++
++ROOT=Path(__file__).resolve().parents[1]
++BASE=ROOT/'artifacts/multipair_debug'
++
++
++class CompleteEvidenceTests(unittest.TestCase):
++    def test_radius_search_does_not_drop_dense_cluster_conflicts(self):
++        rows=[]
++        for i in range(40):
++            rows.append(dict(window_id=str(i),valid=True,split='demo',group_id='synthetic',
++                features=[0.],q=0.05 if i<20 else 0.45,
++                he_bbox=[i*4,0,4,4],ihc_bbox=[i*4,0,4,4]))
++        state=dict(mean=[0.],scale=[1.],centers=[[0.]],demo_only=True,
++                   fit_groups=['synthetic'],distance_threshold=1.5,delta_threshold=.2)
++        pairs=retrieve(rows,state,demo=True,neighbors=1,query_batch_size=3)
++        self.assertEqual(len(pairs),400)
++        self.assertEqual(len({tuple(sorted((p['a'],p['b']))) for p in pairs}),400)
++        for p in pairs:
++            self.assertEqual(p['he_a'],p['ihc_a']);self.assertEqual(p['he_b'],p['ihc_b'])
++
++    def test_radius_search_matches_exhaustive_actual_data(self):
++        rows=[r for r in read_manifest(BASE/'full_manifest.jsonl') if r['valid']]
++        state=fit_morphology([r for r in rows if r['debug_partition']=='train'],demo=True)
++        z=(np.asarray([r['features'] for r in rows])-state['mean'])/state['scale']
++        labels=((z[:,None]-np.asarray(state['centers']))**2).sum(2).argmin(1)
++        expected=set()
++        for i in range(len(rows)):
++            for j in range(i+1,len(rows)):
++                if labels[i]==labels[j] and np.linalg.norm(z[i]-z[j])<=state['distance_threshold'] and abs(rows[i]['q']-rows[j]['q'])>=state['delta_threshold']:
++                    expected.add(tuple(sorted((rows[i]['window_id'],rows[j]['window_id']))))
++        actual={tuple(sorted((p['a'],p['b']))) for p in retrieve(rows,state,demo=True)}
++        self.assertEqual(actual,expected);self.assertEqual(len(actual),106)
++
++    def test_full_images_are_covered_once_before_quality_filter(self):
++        rows=read_manifest(BASE/'full_manifest.jsonl')
++        for pid in {r['pair_id'] for r in rows}:
++            coverage=np.zeros((1024,1024),dtype=np.uint8)
++            for row in [r for r in rows if r['pair_id']==pid]:
++                self.assertEqual(row['he_bbox'],row['ihc_bbox'])
++                x,y,w,h=row['he_bbox'];coverage[y:y+h,x:x+w]+=1
++            self.assertTrue(np.all(coverage==1),pid)
++
++    def test_formal_challenge_refuses_demo_representation(self):
++        rows=[r for r in read_manifest(BASE/'full_manifest.jsonl') if r['valid']]
++        state=fit_morphology([r for r in rows if r['debug_partition']=='train'],demo=True)
++        with self.assertRaises(ValueError):retrieve(rows,state)
++
++    def test_actual_roles_cannot_be_renamed_into_independent_calibration(self):
++        rows=[r for r in read_manifest(BASE/'full_manifest.jsonl') if r['valid']]
++        a=[dict(r,score=.1,event=0,split='calibrate') for r in rows if r['debug_partition']=='dev']
++        b=[dict(r,score=.1,event=0,split='certify') for r in rows if r['debug_partition']=='holdout']
++        with self.assertRaisesRegex(ValueError,'disjoint'):
++            fit_and_certify(a,b,dict(training_groups=[],generator_hash='g',risk_hash='h',protocol_hash=policy_hash()))
++
++    def test_zero_error_binomial_upper_matches_closed_form(self):
++        alpha=.05;count=7;budget=.1
++        for n in [1,2,10,46,47,100]:
++            exact=1-(alpha/count)**(1/n)
++            self.assertAlmostEqual(float(beta.ppf(1-alpha/count,1,n)),exact,places=12)
++        self.assertGreater(1-(alpha/count)**(1/46),budget)
++        self.assertLessEqual(1-(alpha/count)**(1/47),budget)
++
++    def test_no_or_failing_certificate_never_releases(self):
++        scores=[.0,.01,.2,1.]
++        accepted,reason=gate(scores,None,'g','h')
++        self.assertFalse(accepted.any());self.assertEqual(reason,'missing_certificate')
++        def fixture(role):
++            return [dict(group_id=f'synthetic_{role}_{i}',group_kind='patient',split=role,
++                         window_id=str(i),score=.3,event=1) for i in range(100)]
++        cert=fit_and_certify(fixture('calibrate'),fixture('certify'),
++             dict(training_groups=[],generator_hash='g',risk_hash='h',protocol_hash=policy_hash()))
++        self.assertIsNone(cert['chosen']);self.assertFalse(gate(scores,cert,'g','h')[0].any())
++
++    def test_invalid_certificate_release_flag_does_not_override_risk_bound(self):
++        cert=dict(provenance=dict(generator_hash='g',risk_hash='h',protocol_hash=policy_hash()),
++                  chosen=dict(threshold=1.,upper=.5),budget=.1,release_enabled=True,
++                  calibrator=dict(x=[0.,1.],y=[0.,1.]))
++        allowed,reason=gate([0.],cert,'g','h')
++        self.assertFalse(allowed.any());self.assertEqual(reason,'invalid_certificate_policy')
++
++
++if __name__=='__main__':unittest.main()
+--- /dev/null
++++ b/tools/audit_complete_evidence.py
+@@ -0,0 +1,305 @@
++"""Recompute evidence from actual attachments/weights; do not manufacture research success.
++
++Run from repository root: python -m tools.audit_complete_evidence
++All selection is deterministic. This audits frozen debug weights; it does not
++train a new G or turn unknown image sources into independent patients.
++"""
++import argparse
++from collections import Counter
++import hashlib
++import json
++import math
++from pathlib import Path
++import shutil
++from unittest.mock import patch
++import numpy as np
++from PIL import Image
++import torch
++from torch.utils.data import DataLoader
++from sklearn.metrics import average_precision_score,roc_auc_score
++from expression.manifest import read_manifest,sha256
++from expression.statistics import foreground,components,to_rgb
++from expression.runner import seed_everything,load_generator,make_dataset,generated_batch,load_risk
++from expression.challenge import fit_morphology,retrieve
++from expression.calibration import gate,fit_and_certify
++from expression.protocol import policy_hash
++from expression.artifact_io import save_png
++
++ROOT=Path(__file__).resolve().parents[1]
++
++
++def dump(path,value):
++    Path(path).write_text(json.dumps(value,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
++
++
++def independent_dab(image):
++    """NumPy float64, literal fixed stain vectors; no StainStatistics call."""
++    h=np.array([.65,.70,.29],dtype=np.float64);h/=np.linalg.norm(h)
++    d=np.array([.27,.57,.78],dtype=np.float64);d/=np.linalg.norm(d)
++    third=np.cross(h,d);third/=np.linalg.norm(third)
++    inverse=np.linalg.inv(np.column_stack((h,d,third)))
++    rgb=np.clip((np.asarray(image,dtype=np.float64)+1)*127.5,0,255)
++    return np.maximum((-np.log((rgb+1)/256))@inverse[1],0)
++
++
++def region_metrics(fake,reference,mask):
++    a=independent_dab(fake);b=independent_dab(reference)
++    pred=(a>.2)&mask;truth=(b>.2)&mask
++    union=int((pred|truth).sum());intersection=int((pred&truth).sum())
++    q_pred=float(pred.sum()/mask.sum());q_ref=float(truth.sum()/mask.sum())
++    return dict(q_reference=q_ref,q_generated=q_pred,error=abs(q_pred-q_ref),
++        event=int(abs(q_pred-q_ref)>.1),dab_iou=intersection/union if union else None,
++        rgb_l1=float(np.abs(fake-reference)[mask].mean()),
++        intersection=intersection,union=union,reference_positive=int(truth.sum()),
++        generated_positive=int(pred.sum()),mask_pixels=int(mask.sum()))
++
++
++def run(base,out):
++    seed_everything();out.mkdir(parents=True,exist_ok=True)
++    rows=read_manifest(base/'full_manifest.jsonl');valid=[r for r in rows if r['valid']]
++    train=[r for r in valid if r['debug_partition']=='train']
++    unseen=[r for r in valid if r['debug_partition']!='train']
++    original=[json.loads(x) for x in (base/'v1_full_manifest.jsonl').read_text().splitlines()]
++    identity=[];measurement=[];hashes={};old_disagreements=0
++    for pid in sorted({r['pair_id'] for r in rows}):
++        rr=[r for r in rows if r['pair_id']==pid];r=rr[0]
++        he=np.array(Image.open(r['he']).convert('RGB'));ihc=np.array(Image.open(r['ihc']).convert('RGB'))
++        hm=foreground(he);im_old=foreground(ihc);H=components(he,he=True)[:,:,0]
++        coverage=np.zeros(he.shape[:2],dtype=np.uint8)
++        for x in rr:
++            a,b,w,h=x['he_bbox'];coverage[b:b+h,a:a+w]+=1
++            assert x['he_bbox']==x['ihc_bbox']
++            mask=hm[b:b+h,a:a+w]
++            raw=ihc[b:b+h,a:a+w].astype(np.float64)/127.5-1
++            q=float(((independent_dab(raw)>.2)&mask).sum()/mask.sum()) if mask.any() else None
++            measurement.append(dict(window_id=x['window_id'],manifest_q=x['q'],independent_q=q,
++                absolute_difference=abs(q-x['q']) if q is not None else None))
++            legacy=mask.mean()>=.5 and H[b:b+h,a:a+w].std()>=.08 and im_old[b:b+h,a:a+w].mean()>=.5
++            oldrow=next(t for t in original if t['window_id']==x['window_id'])
++            old_disagreements+=int(bool(legacy)!=oldrow['valid'])
++        assert np.all(coverage==1)
++        identity.append(dict(pair_id=pid,windows=len(rr),covered_once_pixels=int((coverage==1).sum()),
++            total_pixels=int(coverage.size),valid=sum(x['valid'] for x in rr)))
++        for k in ['he','ihc']:hashes[str(Path(r[k]).relative_to(ROOT))]=sha256(r[k])
++    dump(out/'input_identity.json',dict(pairs=identity,all_448_coordinates_identical=True,
++        image_hashes=hashes,old_qc_reproduction_disagreements=old_disagreements,
++        max_reference_measurement_difference=max(x['absolute_difference'] or 0 for x in measurement)))
++    dump(out/'independent_reference_measurements.json',measurement)
++    assert old_disagreements==0
++    # Train-only fit, frozen radius and expression thresholds; all comparisons
++    # are between H&E descriptors. Each item retains its own IHC coordinates.
++    state=fit_morphology(train,demo=True);all_pairs=retrieve(valid,state,demo=True)
++    unseen_pairs=retrieve(unseen,state,demo=True)
++    by_id={r['window_id']:r for r in valid}
++    z=(np.array([r['features'] for r in valid])-state['mean'])/state['scale']
++    centers=np.array(state['centers']);labels=((z[:,None]-centers)**2).sum(2).argmin(1)
++    distances=np.sqrt(((z[:,None]-z[None])**2).sum(-1));q=np.array([r['q'] for r in valid])
++    eligible=(distances<=1.5)&(np.abs(q[:,None]-q[None])>=.2)&(labels[:,None]==labels[None])&np.triu(np.ones(distances.shape,dtype=bool),1)
++    expected={(valid[i]['window_id'],valid[j]['window_id']) for i,j in zip(*np.where(eligible))}
++    actual={tuple(sorted((p['a'],p['b']))) for p in all_pairs}
++    assert {tuple(sorted(x)) for x in expected}==actual
++    # Reproduce the former top-16 cap on identical descriptors, without changing inputs.
++    from sklearn.neighbors import NearestNeighbors
++    dd,jj=NearestNeighbors(n_neighbors=17).fit(z).kneighbors(z);oldset=set()
++    for i,(ds,js) in enumerate(zip(dd,jj)):
++        for d,j in zip(ds,js):
++            if i!=j and labels[i]==labels[j] and d<=1.5 and abs(q[i]-q[j])>=.2:
++                oldset.add(tuple(sorted((valid[i]['window_id'],valid[j]['window_id']))))
++    pair_sources=Counter()
++    for p in all_pairs:
++        a,b=by_id[p['a']],by_id[p['b']]
++        pair_sources['same_pair' if a['pair_id']==b['pair_id'] else 'different_pairs']+=1
++    challenge=dict(fit_windows=len(train),unseen_windows=len(unseen),frozen_distance_threshold=1.5,
++        frozen_delta_threshold=.2,old_top16_candidates=len(oldset),complete_candidates=len(all_pairs),
++        exhaustive_count=int(eligible.sum()),missing_candidates_before=len(actual-oldset),
++        unseen_image_pair_candidates=len(unseen_pairs),unseen_reference_q_min=min(r['q'] for r in unseen),
++        unseen_reference_q_max=max(r['q'] for r in unseen),candidate_sources=dict(pair_sources),
++        actual_candidate_group_ids=sorted({by_id[p[k]]['group_id'] for p in all_pairs for k in ['a','b']}),
++        independent_patient_challenge_validated=False,
++        interpretation='All candidates are staining-proxy diagnostics; no verified protein-opposite patient challenge.')
++    dump(out/'challenge_audit.json',challenge);dump(out/'morphology_train_only.json',state)
++    dump(out/'complete_challenge_candidates.json',all_pairs);dump(out/'unseen_challenge_candidates.json',unseen_pairs)
++    print('INPUT_AND_CHALLENGE',json.dumps(challenge),flush=True)
++    # Independently measure floating-point neural outputs from the actual weights.
++    train_counts=np.bincount([min(int(r['q']*5),4) for r in train],minlength=5)
++    prior=(train_counts+1)/(len(train)+5);models={};records_all={};selected={}
++    training_pixel_prevalence=sum(r['q']*r['he_tissue'] for r in train)/sum(r['he_tissue'] for r in train)
++    dump(out/'training_pixel_baseline.json',dict(training_windows=len(train),
++         training_foreground_pixels=round(sum(r['he_tissue']*16384 for r in train)),
++         training_positive_pixels=round(sum(r['q']*r['he_tissue']*16384 for r in train)),
++         training_pixel_prevalence=training_pixel_prevalence,
++         selection='All valid training-role windows only; no dev/holdout targets used.'))
++    hold_rows=[r for r in valid if r['debug_partition']=='holdout']
++    selected_id=max(hold_rows,key=lambda r:(r['q'],r['window_id']))['window_id']
++    for variant in ['v2_compat','v2']:
++        path=base/variant/'generator.pt';model,opt,meta=load_generator(path)
++        opt.pair_manifest=str(base/'holdout_manifest.jsonl');ds=make_dataset(opt)
++        risk,rm=load_risk(base/variant/'risk.pt',path)
++        rr=[];controls=[];pixels=[];truths=[];distributions_invariant=True;max_reproduction_difference=0.
++        old={r['window_id']:r for r in json.loads((base/variant/'holdout_records.json').read_text())}
++        for batch in DataLoader(ds,batch_size=4,shuffle=False):
++            with torch.no_grad():
++                fake,variance,aux,draws=generated_batch(model.netG,batch['A'],batch['window_id'],samples=3)
++                score=risk(batch['A'],fake,variance).sigmoid().flatten().tolist()
++                sweep={};lo_aux=None;hi_aux=None
++                for condition in [0.,.1,.3,.5,.7,.9,1.]:
++                    image,condition_aux=model.netG(batch['A'],condition=torch.full((len(fake),1,1,1),condition),return_aux=True)
++                    sweep[condition]=image.detach().cpu().numpy().transpose(0,2,3,1)
++                    if condition==0.:lo_aux=condition_aux
++                    if condition==1.:hi_aux=condition_aux
++                for key in ['logits','pixel_logits','expected_condition']:
++                    distributions_invariant &= torch.equal(lo_aux[key],hi_aux[key])
++            for i,wid in enumerate(batch['window_id']):
++                a=fake[i].cpu().numpy().transpose(1,2,0);b=batch['paired_B'][i].numpy().transpose(1,2,0)
++                mask=batch['tissue_mask'][i,0].numpy()>0
++                record=region_metrics(a,b,mask);record.update(window_id=wid,score=score[i])
++                probs=aux['probabilities'][i,:,0,0].cpu().numpy().astype(float)
++                label=min(int(record['q_reference']*5),4)
++                record.update(probabilities=probs.tolist(),bin_target=label,
++                    bin_log_loss=float(-np.log(probs[label])),prior_log_loss=float(-np.log(prior[label])),
++                    predicted_condition=float(aux['expected_condition'][i]),
++                    zero_fraction_error=record['q_reference'])
++                pixel_prob=aux['pixel_logits'][i,0].sigmoid().cpu().numpy();pixel_truth=independent_dab(b)[mask]>.2
++                pixels.append(pixel_prob[mask]);truths.append(pixel_truth)
++                reference_by_numpy=record['q_reference']
++                measured=[]
++                for condition,image in sweep.items():
++                    q_cond=float(((independent_dab(image[i])>.2)&mask).sum()/mask.sum())
++                    measured.append(dict(condition=condition,measured_q=q_cond))
++                controls.append(dict(window_id=wid,reference_q=reference_by_numpy,points=measured))
++                for key in ['q_reference','q_generated','error','dab_iou','rgb_l1']:
++                    if old[wid][key] is not None:
++                        max_reproduction_difference=max(max_reproduction_difference,abs(record[key]-old[wid][key]))
++                rr.append(record)
++                if wid==selected_id:
++                    sample_q=[float(((independent_dab(draw.numpy().transpose(1,2,0))>.2)&mask).sum()/mask.sum()) for draw in draws[i].cpu()]
++                    selected[variant]=dict(window_id=wid,bbox=by_id[wid]['he_bbox'],reference_q=reference_by_numpy,
++                        predicted_condition=record['predicted_condition'],sample_generated_q=sample_q,
++                        sample_rgb_variance_mean=float(variance[i].mean()),probabilities=probs.tolist())
++                    for name,img in [('he',batch['A'][i]),('reference',batch['paired_B'][i]),('generated',fake[i])]:
++                        save_png(out/f'{variant}_{name}_crop.png',Image.fromarray(to_rgb(img)))
++                    np.savez_compressed(out/f'{variant}_pixel_evidence.npz',pixel_probability=pixel_prob,
++                        reference_positive=independent_dab(b)>.2,generated_positive=independent_dab(a)>.2,mask=mask)
++                    for j,draw in enumerate(draws[i]):save_png(out/f'{variant}_sample_{j}.png',Image.fromarray(to_rgb(draw)))
++        p=np.concatenate(pixels).astype(float);t=np.concatenate(truths).astype(float)
++        clipped=np.clip(p,1e-7,1-1e-7);prevalence=float(t.mean())
++        event=np.array([r['event'] for r in rr]);scores=np.array([r['score'] for r in rr])
++        # Spatial failure is an additional diagnostic, not a retrospectively
++        # relabelled training objective or a clinically validated error event.
++        spatial=[int(r['dab_iou'] is not None and r['dab_iou']<.1) for r in rr]
++        coverage=[]
++        order=sorted(rr,key=lambda r:(r['score'],r['window_id']))
++        for cover in [.5,.8,1.]:
++            n=int(round(len(order)*cover));sel=order[:n]
++            coverage.append(dict(coverage=cover,n=n,area_error_rate=float(np.mean([r['event'] for r in sel])),
++                localization_failure_rate=float(np.mean([r['dab_iou'] is not None and r['dab_iou']<.1 for r in sel]))))
++        m=dict(n=len(rr),area_mae=float(np.mean([r['error'] for r in rr])),zero_baseline_mae=float(np.mean([r['q_reference'] for r in rr])),
++            mean_dab_iou=float(np.mean([r['dab_iou'] for r in rr if r['dab_iou'] is not None])),rgb_l1=float(np.mean([r['rgb_l1'] for r in rr])),
++            bin_log_loss=float(np.mean([r['bin_log_loss'] for r in rr])),train_histogram_log_loss=float(np.mean([r['prior_log_loss'] for r in rr])),
++            bin_accuracy=float(np.mean([np.argmax(r['probabilities'])==r['bin_target'] for r in rr])),
++            reference_bin_counts=dict(Counter(str(r['bin_target']) for r in rr)),
++            pixel_dab_average_precision=float(average_precision_score(t,p)),pixel_positive_prevalence=prevalence,
++            pixel_bce=float(np.mean(-t*np.log(clipped)-(1-t)*np.log(1-clipped))),
++            pixel_train_prevalence=training_pixel_prevalence,
++            pixel_train_prevalence_bce=float(-prevalence*np.log(training_pixel_prevalence)-(1-prevalence)*np.log(1-training_pixel_prevalence)),
++            pixel_constant_prevalence_bce=float(-prevalence*np.log(prevalence)-(1-prevalence)*np.log(1-prevalence)),
++            high_low_q_response=float(np.mean([c['points'][-2]['measured_q']-c['points'][1]['measured_q'] for c in controls])),
++            mean_condition_realization_error=float(np.mean([abs(p['measured_q']-p['condition']) for c in controls for p in c['points']])),
++            teacher_cannot_change_HE_distribution=bool(distributions_invariant),
++            risk_event_counts=dict(Counter(str(int(e)) for e in event)),risk_training_event_counts=rm['observed_error_events'],
++            raw_risk_auroc=float(roc_auc_score(event,scores)) if len(np.unique(event))==2 else None,
++            raw_risk_brier=float(np.mean((scores-event)**2)),fixed_coverage=coverage,
++            area_event_zero_but_spatial_diagnostic_failed=sum(r['event']==0 and r['dab_iou'] is not None and r['dab_iou']<.1 for r in rr),
++            max_independent_metric_difference_from_saved=max_reproduction_difference,
++            generator_sha256=sha256(path),risk_sha256=sha256(base/variant/'risk.pt'),
++            source='Saved 160-step ngf=8 frozen debug weights; no new G training.')
++        assert max_reproduction_difference<1e-6,(variant,max_reproduction_difference)
++        assert distributions_invariant
++        dump(out/f'{variant}_independent_holdout_records.json',rr);dump(out/f'{variant}_condition_sweep.json',controls)
++        records_all[variant]=rr;models[variant]=m
++        print('MODEL',variant,json.dumps(m),flush=True)
++    dump(out/'selected_sampling_evidence.json',selected)
++    # Exact G equality after the earlier compatibility migration.
++    v1=torch.load(base/'v1/generator.pt',map_location='cpu',weights_only=True)
++    compat=torch.load(base/'v2_compat/generator.pt',map_location='cpu',weights_only=True)
++    weight_difference=max(float((v1['generator'][k]-compat['generator'][k]).abs().max()) for k in v1['generator'])
++    assert weight_difference==0.
++    traces={}
++    for variant in ['v1','v2']:
++        log=json.loads((base/variant/'training.json').read_text())
++        finite=all(np.isfinite(v) for r in log for v in r.values());assert finite and len(log)==160
++        traces[variant]=dict(steps=len(log),sequential_steps=[r['step'] for r in log]==list(range(1,161)),all_losses_finite=finite,
++            training_log_sha256=sha256(base/variant/'training.json'),checkpoint_sha256=sha256(base/variant/'generator.pt'))
++    # Instrument the real deployment entry point. Any file-image read except the
++    # supplied H&E is rejected; PNG decode checks on in-memory buffers are allowed.
++    from expression import cli
++    he_path=by_id[selected_id]['he'];opened=[];export_reads=[];hash_calls=[];original_open=Image.open;original_hash=cli.sha256
++    def guarded_open(fp,*args,**kwargs):
++        if isinstance(fp,(str,Path)):
++            resolved=Path(fp).resolve()
++            if resolved==Path(he_path).resolve():opened.append(str(resolved))
++            elif resolved.parent==(out/'he_only_inference').resolve():export_reads.append(str(resolved))
++            else:raise AssertionError('Unexpected file-image read '+str(resolved))
++        return original_open(fp,*args,**kwargs)
++    def counted_hash(path):hash_calls.append(str(Path(path).resolve()));return original_hash(path)
++    with patch.object(Image,'open',guarded_open),patch.object(cli,'sha256',counted_hash):
++        inference=cli.predict_image(he_path,base/'v2_compat/generator.pt',base/'v2_compat/risk.pt',out/'he_only_inference')
++    expected_hash_paths=[str((base/'v2_compat/generator.pt').resolve()),str((base/'v2_compat/risk.pt').resolve())]
++    assert hash_calls==expected_hash_paths
++    assert all(not r['accepted'] for r in inference)
++    inference_audit=dict(input_file_image_reads=opened,output_png_decode_checks=export_reads,
++        reference_ihc_accessed=False,window_count=len(inference),
++        released_windows=sum(r['accepted'] for r in inference),gate_digest_calls=hash_calls,
++        digest_calls_per_file=dict(Counter(hash_calls)),reason_counts=dict(Counter(r['reason'] for r in inference)),
++        scope='Actual H&E-only entry point with real debug G/h; no certificate exists.')
++    dump(out/'he_only_access_audit.json',inference_audit)
++    # Test actual-source overlap without assigning invented patient identities.
++    a=[dict(r,score=.1,event=0,split='calibrate') for r in valid if r['debug_partition']=='dev']
++    b=[dict(r,score=.1,event=0,split='certify') for r in valid if r['debug_partition']=='holdout']
++    try:
++        fit_and_certify(a,b,dict(training_groups=[],generator_hash='g',risk_hash='h',protocol_hash=policy_hash()))
++        raise AssertionError('Actual overlapping sources were certified.')
++    except ValueError as exc:actual_rejection=str(exc)
++    K=7;alpha=.05;budget=.1
++    certification=dict(actual_source_attempt_rejected=actual_rejection,
++        actual_distinct_source_ids=len({r['group_id'] for r in valid}),verified_patient_groups=0,
++        candidate_threshold_count=K,alpha=alpha,risk_budget=budget,
++        zero_errors_upper=[dict(selected_independent_groups=n,upper=1-(alpha/K)**(1/n)) for n in [1,2,10,46,47,100]],
++        minimum_accepted_independent_B_groups_if_zero_errors=math.ceil(math.log(alpha/K)/math.log(1-budget)),
++        formula='U(e=0,n)=1-(alpha/K)^(1/n); general U=BetaQuantile(1-alpha/K,e+1,n-e)',
++        guarantee_assumptions=['G, h, error definition and candidate thresholds frozen before B',
++            'A, B, training and test source groups independent and disjoint',
++            'one uniformly sampled valid window per independent group; groups equally weighted',
++            'deployment shares the certified source distribution and quality protocol'],
++        actual_certificate_exists=False,actual_trusted_release_coverage=0.)
++    dump(out/'certification_audit.json',certification)
++    max_input_diff=max(x['absolute_difference'] or 0 for x in measurement)
++    result=dict(scope='Evidence audit of actual attachments, NOT a positive clinical validation',
++        input_pairs=7,new_pairs=6,total_raw_windows=len(rows),valid_windows=len(valid),
++        all_coordinates_identity=True,max_independent_reference_difference=max_input_diff,
++        challenge=challenge,models=models,compat_generator_weight_difference=weight_difference,
++        training_trace_checks=traces,inference=inference_audit,certification=certification,
++        no_new_generator_training=True,
++        conclusions=dict(marker_specific_predictability='not_established',
++            biological_expression_posterior='not_established; measured distribution and localization fail controls',
++            calibrated_pathology_risk='not_established; no independent certification data',
++            software_identity_and_fail_closed_deployment='executed_and_verified'))
++    dump(out/'complete_evidence.json',result)
++    # Flat, independently recomputed per-window evidence, easy to inspect elsewhere.
++    import csv
++    with (out/'independent_holdout_metrics.csv').open('w',newline='') as f:
++        columns=['variant','window_id','q_reference','q_generated','error','event','dab_iou','rgb_l1','score','bin_log_loss','prior_log_loss']
++        w=csv.DictWriter(f,fieldnames=columns);w.writeheader()
++        for variant,rr in records_all.items():
++            for r in rr:w.writerow(dict(variant=variant,**{k:r[k] for k in columns if k!='variant'}))
++    print('EVIDENCE_COMPLETE',out,flush=True)
++    return result
++
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--base',default='artifacts/multipair_debug');parser.add_argument('--out',default='artifacts/complete_evidence')
++    args=parser.parse_args();run(Path(args.base).resolve(),Path(args.out).resolve())
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/build_expression_pairs.py
+@@ -0,0 +1,40 @@
++"""Build image-pair CSV automatically by identity keys; no spatial searching.
++
++Metadata CSV columns: pair_id,group_id,group_kind,split. Source identifiers must
++come from dataset metadata, not from pretending every patch is a patient.
++"""
++import argparse
++import csv
++from pathlib import Path
++import re
++
++
++def indexed(directory,pattern):
++    result={}
++    for p in sorted(Path(directory).rglob('*')):
++        if p.suffix.lower() not in ('.png','.jpg','.jpeg','.tif','.tiff','.bmp'):continue
++        match=re.fullmatch(pattern,p.stem)
++        if not match:raise ValueError('Filename does not match identity pattern: '+str(p))
++        key=match.group(1)
++        if key in result:raise ValueError('Duplicate pair identity: '+key)
++        result[key]=str(p.resolve())
++    return result
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--he-dir',required=True);p.add_argument('--ihc-dir',required=True)
++    p.add_argument('--metadata',required=True);p.add_argument('--out',required=True)
++    p.add_argument('--he-key-regex',default='(.*)');p.add_argument('--ihc-key-regex',default='(.*)')
++    a=p.parse_args();he=indexed(a.he_dir,a.he_key_regex);ihc=indexed(a.ihc_dir,a.ihc_key_regex)
++    if he.keys()!=ihc.keys():raise ValueError('Unpaired identities; no silent nearest-image substitution.')
++    with open(a.metadata,newline='') as f:metadata={r['pair_id']:r for r in csv.DictReader(f)}
++    if metadata.keys()!=he.keys():raise ValueError('Metadata and image pair identities must match exactly.')
++    out=Path(a.out);out.parent.mkdir(parents=True,exist_ok=True)
++    with out.open('w',newline='') as f:
++        writer=csv.DictWriter(f,fieldnames=['pair_id','group_id','group_kind','split','he','ihc']);writer.writeheader()
++        for key in sorted(he):writer.writerow({**metadata[key],'he':he[key],'ihc':ihc[key]})
++    print('Paired identities:',len(he))
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/export_expression_checkpoint.py
+@@ -0,0 +1,30 @@
++"""Wrap native train.py weights with explicit operator-provided training provenance."""
++import argparse
++from pathlib import Path
++import sys
++sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
++import torch
++from expression.manifest import read_manifest,sha256
++from expression.runner import make_options
++from models.expression_cut_model import ExpressionCUTModel
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--checkpoint',required=True)
++    p.add_argument('--manifest',required=True);p.add_argument('--out',required=True)
++    p.add_argument('--ngf',type=int,default=64);p.add_argument('--steps',type=int,required=True)
++    p.add_argument('--no-antialias',action='store_true');p.add_argument('--no-antialias-up',action='store_true')
++    a=p.parse_args();out=Path(a.out);out.parent.mkdir(parents=True,exist_ok=True)
++    rows=[r for r in read_manifest(a.manifest) if r['split']=='train']
++    if not rows:raise ValueError('No declared generator-training groups.')
++    opt=make_options(a.manifest,out.parent,ngf=a.ngf,no_antialias=a.no_antialias,no_antialias_up=a.no_antialias_up)
++    state=torch.load(a.checkpoint,map_location='cpu',weights_only=True)
++    model=ExpressionCUTModel(opt);model.netG.load_state_dict(state,strict=True)
++    metadata=dict(options=vars(opt),training_groups=sorted({r['group_id'] for r in rows}),demo_only=False,
++                  steps=a.steps,manifest_hash=sha256(a.manifest),source_checkpoint_hash=sha256(a.checkpoint),
++                  provenance_status='training-source membership supplied by operator; not inferred from weights')
++    torch.save(dict(generator=model.netG.state_dict(),metadata=metadata),out)
++    print('Exported strict architecture match; historical training provenance remains an operator assertion.')
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/multipair_debug_worker.py
+@@ -0,0 +1,110 @@
++"""Run one predeclared multi-pair experiment; supports frozen v1 source on PYTHONPATH."""
++import argparse
++import gc
++import inspect
++import json
++from pathlib import Path
++import numpy as np
++import torch
++from PIL import Image
++from torch.utils.data import DataLoader
++from expression.runner import (seed_everything,make_options,make_dataset,train_generator,
++                               evaluate_generator,metric_summary,train_risk,load_generator)
++from expression.statistics import StainStatistics,to_rgb
++
++
++def dump(path,data):
++    Path(path).write_text(json.dumps(data,ensure_ascii=False,indent=2,allow_nan=False))
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--variant',required=True)
++    p.add_argument('--manifests',required=True);p.add_argument('--out',required=True)
++    p.add_argument('--steps',type=int,default=160);a=p.parse_args()
++    base=Path(a.manifests).resolve();out=Path(a.out).resolve();out.mkdir(parents=True,exist_ok=True)
++    seed_everything();opt=make_options(base/'train_manifest.jsonl',out,'expression_cut','demo',ngf=8,batch_size=4)
++    if a.variant=='v2':
++        opt.learn_bin_means=True;opt.lambda_moment=2.;opt.teacher_probability=.5
++    if a.variant=='compat':
++        from expression.protocol import SAMPLING_PROTOCOL,policy_hash
++        checkpoint=torch.load(base/'v1/generator.pt',map_location='cpu',weights_only=True)
++        checkpoint['metadata']['options'].update(learn_bin_means=False,lambda_moment=0.,teacher_probability=1.)
++        checkpoint['metadata'].update(sampling_protocol=SAMPLING_PROTOCOL,protocol_hash=policy_hash(),architecture_version=2,
++            weights_origin='Copied unchanged from v1 160-step multi-pair run; no third generator training run.')
++        path=out/'generator.pt';torch.save(checkpoint,path)
++        model,opt,meta=load_generator(path);opt.isTrain=True;dataset=make_dataset(opt)
++    else:model,dataset,meta,path=train_generator(opt,a.steps,out)
++    records={};summary={};images={};ds={};stat=StainStatistics()
++    def add_spatial_metrics(record,output):
++        m=output['mask']>0;pred=(stat.dab(output['fake'][None])[0]>.2)&m
++        ref=(stat.dab(output['reference'][None])[0]>.2)&m
++        union=int((pred|ref).sum());inter=int((pred&ref).sum())
++        record['dab_iou']=inter/union if union else None
++        record['rgb_l1']=float(((output['fake']-output['reference']).abs()*m).sum()/(3*m.sum().clamp_min(1)))
++    for role in ['train','dev','holdout']:
++        local=vars(opt).copy();local['pair_manifest']=str(base/(role+'_manifest.jsonl'))
++        from types import SimpleNamespace
++        ds[role]=make_dataset(SimpleNamespace(**local));by_id={r['window_id']:r for r in ds[role].rows}
++        def sink(output,record):
++            add_spatial_metrics(record,output)
++            row=by_id[output['id']];pid=row['pair_id'];x,y,w,h=row['he_bbox']
++            if pid not in images:
++                width,height=Image.open(row['he']).size
++                images[pid]=np.full((height,width,3),220,dtype=np.uint8)
++            images[pid][y:y+h,x:x+w]=to_rgb(output['fake'])
++        kwargs=dict(batch_size=4,samples=1)
++        if 'keep_outputs' in inspect.signature(evaluate_generator).parameters:
++            kwargs.update(keep_outputs=False,output_callback=sink)
++        rr,outputs=evaluate_generator(model.netG,ds[role],**kwargs)
++        if outputs:
++            for r,o in zip(rr,outputs):sink(o,r)
++        records[role]=rr
++        q=[r['q_reference'] for r in rr]
++        summary[role]=dict(metric_summary(rr),zero_fraction_mae=float(np.mean(np.abs(q))),
++            bin0_fraction=float(np.mean(np.array(q)<.2)),
++            dab_iou=float(np.mean([r['dab_iou'] for r in rr if r['dab_iou'] is not None])),
++            rgb_l1=float(np.mean([r['rgb_l1'] for r in rr])))
++        dump(out/(role+'_records.json'),rr)
++        del outputs;gc.collect()
++    # Compare deployment mean conditions to oracle conditions on all held-out windows.
++    oracle_errors=[];condition_errors=[];controls=[];net=model.netG.eval()
++    with torch.no_grad():
++        for batch in DataLoader(ds['holdout'],batch_size=4,shuffle=False):
++            q,_=stat(batch['paired_B'],batch['tissue_mask'])
++            oracle=net(batch['A'],condition=q);oq,_=stat(oracle,batch['tissue_mask'])
++            oracle_errors.extend((oq-q).abs().flatten().tolist())
++            _,aux=net(batch['A'],return_aux=True)
++            condition_errors.extend((aux['condition']-q).abs().flatten().tolist())
++            measured=[]
++            for s in [.1,.5,.9]:
++                fake=net(batch['A'],condition=torch.full_like(q,s));v,_=stat(fake,batch['tissue_mask']);measured.append(v.flatten().tolist())
++            for wid,values in zip(batch['window_id'],zip(*measured)):
++                controls.append(dict(window_id=wid,measured=list(values)))
++    summary['conditioning']=dict(oracle_stat_mae=float(np.mean(oracle_errors)),
++        deployed_condition_mae=float(np.mean(condition_errors)),mean_high_minus_low=float(np.mean([c['measured'][-1]-c['measured'][0] for c in controls])),
++        monotone_fraction=float(np.mean([c['measured'][0]<=c['measured'][1]<=c['measured'][2] for c in controls])))
++    dump(out/'controls.json',controls)
++    # h is trained only on the development image-pair, never the G train/holdout images.
++    # All roles are explicitly same-source demo: this is not independent calibration.
++    if a.variant in ('v2','compat'):
++        risk,rm,rp=train_risk(model.netG,ds['dev'],out,path,steps=160,batch_size=4,samples=3,cache_demo=True)
++        rr,_=evaluate_generator(model.netG,ds['holdout'],risk,batch_size=4,samples=3,keep_outputs=False)
++        summary['raw_risk_holdout']=metric_summary(rr)
++        events=np.array([r['event'] for r in rr]);scores=np.array([r['score'] for r in rr])
++        from sklearn.metrics import roc_auc_score
++        summary['raw_risk_holdout'].update(auroc=float(roc_auc_score(events,scores)) if len(np.unique(events))==2 else None,
++                                          event_classes=np.unique(events).tolist(),brier=float(np.mean((scores-events)**2)),
++                                          status='within-source image-pair holdout; uncalibrated')
++        summary['risk_training_events']=rm.get('observed_error_events')
++        dump(out/'holdout_risk_records.json',rr)
++    # Buffered + verified export avoids silently delivering an incomplete final PNG.
++    from expression.artifact_io import save_png
++    for pid,img in images.items():save_png(out/(pid+'_generated.png'),Image.fromarray(img))
++    summary.update(variant=a.variant,steps=a.steps,ngf=8,residual_blocks=6,
++        scope='image-pair debugging only; 2M source shared across roles; no patient-level validation',
++        dataset_cache=dict(hits=getattr(dataset,'cache_hits',None),misses=getattr(dataset,'cache_misses',None)))
++    if a.variant=='compat':summary['weights_origin']=meta['weights_origin']
++    dump(out/'summary.json',summary);print('RESULT',json.dumps(summary),flush=True)
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/report_complete_evidence.py
+@@ -0,0 +1,144 @@
++"""Render the evidence ledger from measurements; no fabricated positive result."""
++import argparse
++import base64
++import html
++import json
++from pathlib import Path
++import numpy as np
++from PIL import Image
++import matplotlib
++matplotlib.use('Agg')
++import matplotlib.pyplot as plt
++from expression.manifest import read_manifest,sha256
++from expression.artifact_io import save_figure
++
++
++def read(path):return json.loads(Path(path).read_text())
++def table(head,rows):
++    return '<div class="table"><table><thead><tr>'+''.join('<th>'+html.escape(str(x))+'</th>' for x in head)+'</tr></thead><tbody>'+''.join('<tr>'+''.join('<td>'+html.escape(str(x))+'</td>' for x in r)+'</tr>' for r in rows)+'</tbody></table></div>'
++
++
++def main():
++    p=argparse.ArgumentParser();p.add_argument('--base',default='artifacts/multipair_debug');p.add_argument('--out',default='artifacts/complete_evidence');a=p.parse_args()
++    root=Path(__file__).resolve().parents[1];base=Path(a.base).resolve();out=Path(a.out).resolve()
++    d=read(out/'complete_evidence.json');m=d['models']['v2_compat'];ex=d['models']['v2'];c=d['challenge'];cert=d['certification']
++    rows=read_manifest(base/'full_manifest.jsonl');by_id={r['window_id']:r for r in rows}
++    plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'axes.spines.top':False,'axes.spines.right':False})
++    fig,axes=plt.subplots(1,3,figsize=(15,4.8),layout='constrained')
++    bars=axes[0].bar(['Old cap','Full radius','Dev + holdout'],[c['old_top16_candidates'],c['complete_candidates'],c['unseen_image_pair_candidates']],color=['#8997a0','#087e8b','#bb5c35']);axes[0].bar_label(bars,padding=3)
++    axes[0].set(title='Challenge candidates: code fixed,\nunseen-image evidence absent',ylabel='Proxy-conflict pairs',ylim=(0,125))
++    x=np.arange(2);w=.34
++    for offset,values,label,color in [(-w/2,[m['bin_log_loss'],m['pixel_bce']],'Trained model','#ba5936'),(w/2,[m['train_histogram_log_loss'],m['pixel_train_prevalence_bce']],'Train-only constant controls','#087e8b')]:
++        bars=axes[1].bar(x+offset,values,w,label=label,color=color);axes[1].bar_label(bars,fmt='%.3f',padding=3)
++    axes[1].set(xticks=x,xticklabels=['Region-bin log loss','Pixel DAB BCE'],title='Lower is better:\nmodel does not beat simple controls',ylim=(0,1.2));axes[1].legend(fontsize=8)
++    axes[1].text(.01,-.2,'Both displayed controls use training targets only.',transform=axes[1].transAxes,fontsize=8)
++    for variant,label,color in [('v2_compat','Default / compat','#087e8b'),('v2','Disabled experiment','#ba5936')]:
++        sweep=read(out/f'{variant}_condition_sweep.json');x=[r['condition'] for r in sweep[0]['points']];y=np.mean([[r['measured_q'] for r in s['points']] for s in sweep],axis=0)
++        axes[2].plot(x,y,'o-',label=label,color=color)
++    axes[2].plot([0,1],[0,1],'--',color='#88939b',label='Ideal statistic control')
++    axes[2].set(xlabel='Requested DAB fraction',ylabel='Measured generated DAB fraction',title='Actual condition control on all 63 windows',xlim=(0,1),ylim=(0,1));axes[2].legend(fontsize=8)
++    save_figure(out/'evidence_summary.png',fig);plt.close(fig)
++    s=read(out/'selected_sampling_evidence.json')['v2_compat'];npz=np.load(out/'v2_compat_pixel_evidence.npz')
++    fig,axes=plt.subplots(2,3,figsize=(11,7.8),layout='constrained')
++    for ax,name,title in zip(axes[0],['he','reference','generated'],['H&E / fixed coordinates','Real paired IHC','Actual trained virtual IHC']):
++        ax.imshow(Image.open(out/f'v2_compat_{name}_crop.png'));ax.set_title(title);ax.axis('off')
++    axes[1,0].imshow(npz['reference_positive']&npz['mask'],vmin=0,vmax=1,cmap='gray');axes[1,0].set_title('Reference DAB proxy > 0.20')
++    axes[1,1].imshow(npz['generated_positive']&npz['mask'],vmin=0,vmax=1,cmap='gray');axes[1,1].set_title('Generated DAB proxy > 0.20')
++    im=axes[1,2].imshow(npz['pixel_probability'],vmin=0,vmax=1,cmap='viridis');axes[1,2].set_title('Auxiliary pixel DAB probability');fig.colorbar(im,ax=axes[1,2],shrink=.7)
++    for ax in axes[1]:ax.axis('off')
++    fig.suptitle(f"Automatically selected maximum-reference-DAB holdout window: {s['window_id']}\nBbox={s['bbox']}; reference fraction={s['reference_q']:.5f}. No manual ROI.",fontsize=11)
++    save_figure(out/'actual_window_evidence.png',fig);plt.close(fig)
++    candidate=read(out/'complete_challenge_candidates.json')[0]
++    fig,axes=plt.subplots(1,4,figsize=(12,4.2),layout='constrained')
++    for i,key in enumerate(['a','b']):
++        r=by_id[candidate[key]];x,y,w,h=r['he_bbox']
++        for j,image_key in enumerate(['he','ihc']):
++            crop=np.array(Image.open(r[image_key]))[y:y+h,x:x+w]
++            ax=axes[i*2+j];ax.imshow(crop);ax.axis('off');ax.set_title(f"{key.upper()} {image_key.upper()} / q={r['q']:.3f}\n{r['window_id']}\n{x},{y},{w},{h}",fontsize=9)
++    fig.suptitle(f"Automatic nearest qualifying H&E proxy pair: distance={candidate['distance']:.3f}; DAB difference={candidate['delta']:.3f}\nContains training/demo images. This is not a verified opposite-protein patient challenge.",fontsize=11)
++    save_figure(out/'automatic_candidate_evidence.png',fig);plt.close(fig)
++    fig,axes=plt.subplots(1,2,figsize=(11,4.6),layout='constrained')
++    for variant,label,color in [('v2_compat','Default / compat','#087e8b'),('v2','Disabled experiment','#ba5936')]:
++        r=d['models'][variant]['fixed_coverage'];axes[0].plot([x['coverage'] for x in r],[x['area_error_rate'] for x in r],'o-',label=label,color=color)
++    axes[0].plot([.5,.8,1.],[1,1,1],'x--',color='#38434b',label='Default localization diagnostic')
++    axes[0].set(xlabel='Requested within-image coverage',ylabel='Observed failure proportion',title='Raw score ranking: single-class area events',ylim=(-.05,1.08));axes[0].legend(fontsize=8)
++    ns=[1,2,10,46,47,100];upper=[1-(.05/7)**(1/n) for n in ns]
++    axes[1].plot(ns,upper,'o-',color='#087e8b');axes[1].axhline(.1,color='#ba5936',linestyle='--',label='Risk budget 0.10')
++    axes[1].set(xlabel='Accepted independent B groups, zero errors',ylabel='One-sided upper risk bound',title='Mathematical software check / K=7, alpha=.05',ylim=(0,1));axes[1].legend(fontsize=8)
++    fig.suptitle('No actual independent-patient certificate exists. Rejection is not a negative protein label.',fontsize=11)
++    save_figure(out/'risk_and_certification_evidence.png',fig);plt.close(fig)
++    steps=[
++      ('1.1','自动全图分窗','软件实测通过','7 对、448 窗；每张图覆盖一次；全部 H&E/IHC 框相同。这只验证坐标实现，不证明实际配准精度。','input_identity.json'),
++      ('1.2','自动同坐标质控','规则执行通过，组织真值未验证','新 6 对 8→333/384 窗；仍是近白可观测性规则，不证明病理组织判断正确。','input_identity.json；旧/新 manifest'),
++      ('1.3','实染参考量测','数值复算通过',f"独立 NumPy 与 manifest 的 q 最大差 {d['max_independent_reference_difference']:.3g}；q 只是区域 DAB 代理。",'independent_reference_measurements.json'),
++      ('1.4','形态表示训练','软件实测通过','仅用训练角色 270 窗拟合 9 维 H&E 特征及聚类；固定距离 1.5、差异 0.2。','morphology_train_only.json'),
++      ('1.5','形态近似、表达相反挑战','研究证据不足','全量含训练图得到 106 对代理候选；开发/留出 127 窗得到 0 对；无经核实的蛋白相反标签。','challenge_audit.json；完整候选清单'),
++      ('1.6','标记物特异可预测边界','未证明','标记物身份、病人关系和真实表达标签未核实，当前不能宣称得到 HER2 等标记物的可信边界。','complete_evidence.json'),
++      ('2.1','配对监督与目标自动派生','软件实测通过','随机 B 与 paired_B 分离；配对同步；五箱标签为固定 DAB 统计。','tests.txt；逐窗独立记录'),
++      ('2.2','区域表达分布头','当前实测不支持有效性',f"留出 log-loss={m['bin_log_loss']:.4f}，劣于训练直方图先验 {m['train_histogram_log_loss']:.4f}；全部 63 窗属于第 0 箱。",'v2_compat_independent_holdout_records.json'),
++      ('2.3','细胞阳性概率／像素头','细胞层面未实现；像素代理表现弱',f"实现的是像素 DAB 辅助头，无细胞检测与细胞真值。像素 BCE={m['pixel_bce']:.4f}；训练阳性率常数基线 BCE={m['pixel_train_prevalence_bce']:.4f}。",'v2_compat_pixel_evidence.npz；complete_evidence.json'),
++      ('2.4','六残差块与 FiLM 条件控制','结构通过，控制量不足',f"高低条件跨度 0.8，生成 DAB 面积率均差仅 {m['high_low_q_response']:.6f}；不能把单调响应当作定量控制成功。",'v2_compat_condition_sweep.json'),
++      ('2.5','多样本后验生成','采样可运行，生物学后验未证明','真实 G 生成样本与采样方差已保存；单参考、分箱代表值和未校准概率均不足以识别真实生物学后验。','selected_sampling_evidence.json；sample PNG'),
++      ('2.6','条件／空间一致性','当前实测失败',f"默认 MAE={m['area_mae']:.6f} 但 IoU={m['mean_dab_iou']:.6f}；实验组合 MAE={ex['area_mae']:.6f}，保持默认关闭。",'独立逐窗 CSV；condition_sweep.json'),
++      ('3.1','来源分组与防泄漏','拒绝逻辑通过，数据不独立','仅 2 个未核实来源家族；2M 家族跨调试角色；开发与留出源重叠，不能改名伪造独立组。','certification_audit.json；tests.txt'),
++      ('3.2','病理错误事件定义','面积率事件可算，病理错误目标不足','默认 63 窗面积率事件全 0，但 IoU<0.1 的定位诊断全失败。诊断不是临床金标准，也没有事后替换训练目标。','独立逐窗 CSV'),
++      ('3.3','h 预测真实错误','未证明','默认 h 开发事件 64 个 0、留出 63 个 0；实验 h 全 1；AUROC 无定义，低 Brier 没有区分价值。','complete_evidence.json'),
++      ('3.4','独立患者概率校准 A','数据缺失','没有可用的独立、身份核实的 A 组。未拟合或发布真实概率校准器。','certification_audit.json'),
++      ('3.5','预设风险认证 B','数学公式可核验，实证保证未成立','固定 7 阈值、alpha=0.05、预算=0.10；即使零错误也至少需要 47 个被接受的独立 B 组；当前 0 个核实患者组。','certification_audit.json；tests.txt'),
++      ('3.6','H&E-only 自动拒绝','实际入口实测通过','监测了文件图像读取；只读输入 H&E。64 窗可信放行 0；拒绝不当作阴性。门控权重摘要每文件仅计算一次。','he_only_access_audit.json；he_only_inference/prediction.json')]
++    bugs=read(base/'issues.json')['fixed']
++    bug_proofs={
++      'B1':'旧质控独立重算与旧 manifest 完全一致；新有效窗数量由完整清单复算。',
++      'B2':'旧版改名最大 RGB 差 0.03205；当前改名样本及方差逐元素相等，测试通过。',
++      'B3':'旧版无关 argv 导致 exit=2；当前同样 argv 不污染工厂，测试通过。',
++      'B4':'256×256 prepare→选项→数据读取完整测试通过。',
++      'B5':'记录模式保留图像对象为 0，回调仍逐窗执行，测试通过。',
++      'B6':'两实例缓存隔离、容量上限及重复访问命中，测试通过。',
++      'B7':'越界/NaN 分数、旧协议、权重绑定和越风险上界证书均拒绝，测试通过。',
++      'B8':'实际 H&E 推理记录：门控 G/h 摘要各调用 1 次，不随 64 窗重复。',
++      'B9':'大图 PNG 无损往返测试通过；所有随本报告图像解码通过。'}
++    bug_rows=[(b[0],b[1],bug_proofs[b[0]]) for b in bugs]
++    bug_rows.append(('B10','固定 top-16 漏检形态冲突','旧 88 对；全半径 106 对；独立穷举恰好 106 对。密集合成簇 400 对完整枚举回归测试通过。'))
++    tests=(out/'tests.txt').read_text();assert 'Ran 32 tests' in tests and '\nOK' in tests
++    for png in out.rglob('*.png'):
++        with Image.open(png) as im:im.load()
++    (out/'step_evidence_complete.json').write_text(json.dumps([dict(step=r[0],action=r[1],status=r[2],evidence=r[3],source=r[4]) for r in steps],ensure_ascii=False,indent=2)+'\n')
++    proof_index={str(p.relative_to(root)):sha256(p) for p in sorted(out.rglob('*')) if p.is_file() and p.name not in {'EVIDENCE_INDEX.json','complete_evidence_report.html','complete_evidence_report.md'}}
++    for p in [root/'expression/challenge.py',root/'tools/audit_complete_evidence.py',root/'tools/report_complete_evidence.py',root/'tests/test_proof_audit.py']:
++        proof_index[str(p.relative_to(root))]=sha256(p)
++    (out/'EVIDENCE_INDEX.json').write_text(json.dumps(proof_index,ensure_ascii=False,indent=2)+'\n')
++    def figure(name,caption):
++        return '<figure><img alt="'+html.escape(caption)+'" src="data:image/png;base64,'+base64.b64encode((out/name).read_bytes()).decode()+'"><figcaption>'+html.escape(caption)+'</figcaption></figure>'
++    style='body{font:16px/1.7 system-ui,sans-serif;color:#20303c;background:#f4f6f7;margin:0}main{max-width:1220px;margin:auto;padding:28px 22px}h1{font-size:32px;line-height:1.3}h2{font-size:23px;margin-top:36px}p{max-width:1050px}.box{padding:16px 20px;background:white;border-left:5px solid #b85635;border-radius:6px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.card{background:white;padding:17px;border-top:4px solid #b85635}.card b{display:block}figure{margin:26px 0;padding:12px;background:white}img{display:block;width:100%;height:auto}figcaption{font-size:14px;color:#465c68;padding:8px}.table{overflow:auto;background:white}table{border-collapse:collapse;width:100%;min-width:760px}th,td{text-align:left;vertical-align:top;padding:11px 12px;border-bottom:1px solid #dbe2e5}th{background:#e7eef0}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;background:white;padding:16px}details{margin:12px 0;background:#fff;padding:12px}code{background:#e7eef0;padding:2px 4px}small{color:#526977}@media(max-width:700px){.cards{grid-template-columns:1fr}h1{font-size:26px}main{padding:18px 12px}}'
++    page='<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CUT 全流程逐条证据审计</title><style>'+style+'</style></head><body><main>'
++    page+='<h1>逐条证明到哪里了？<br>三项创新、18 步实现、10 项软件修复的证据账本</h1>'
++    page+='<p class="box"><b>结论：不能据现有数据证明三项创新全部有效。</b> 本次对真实附件、冻结权重和原始记录独立复算；软件流程与拒绝入口可以验证，表达边界、真实后验和患者级校准均未成立。下面保留反证和证据缺口，不把“能运行”写成“有效”。</p>'
++    page+='<p>数据：新增 6 对＋旧 1 对，7 张 H&E 和 7 张 IHC；448 个原始同坐标窗、397 个规则有效窗；训练／开发／留出为 270／64／63 窗。图片角色沿用之前的固定划分；两次 G 训练各 160 步、ngf=8、6 残差块。本次没有重新训练 G、没有使用留出结果选择新 checkpoint，也没有虚构患者标识。</p>'
++    page+='<div class="cards"><div class="card"><b>创新 ① 可预测边界：未证明</b>106 对含训练图的代理候选；开发／留出候选为 0；没有核实的蛋白相反真值。</div><div class="card"><b>创新 ② 表达后验：未证明</b>分布预测弱于训练频率先验；定位和条件控制失败；细胞级概率尚未实现。</div><div class="card"><b>创新 ③ 可信校准：未证明</b>事件只有一类；独立 A／B 数据缺失；可信展示为 0／64。</div></div>'
++    page+=figure('evidence_summary.png','独立复算与负对照。左：新发现的检索漏检已修复；中：预测头没有通过简单对照；右：条件响应远不足以跟随指定表达量。图中两个常数对照均仅使用训练标签计算。')
++    page+='<h2>18 个实现步骤逐条核对</h2>'+table(['步骤','实现','结论等级','实际证据','原始文件'],steps)
++    page+='<h2>真实图片与原位参考：自动选窗</h2>'+figure('actual_window_evidence.png','自动选择留出图中参考 DAB 比例最高的窗。选窗规则用于诊断展示，全部 63 窗才用于量化。像素头是 DAB 代理，不是细胞蛋白阳性概率。')
++    page+='<h2>挑战候选：可复现，也有明确边界</h2>'+figure('automatic_candidate_evidence.png','选择距离最小的合格候选，无人工 ROI。H&E 在不同窗口之间做形态比较；每个窗口的 IHC 始终读取它自己的原坐标，未做区域外对应搜索。')
++    metric_rows=[['固定零面积率',f"{m['zero_baseline_mae']:.6f}",'—','—'],['默认兼容 G',f"{m['area_mae']:.6f}",f"{m['mean_dab_iou']:.6f}",f"{m['rgb_l1']:.6f}"],['失败实验组合（默认关闭）',f"{ex['area_mae']:.6f}",f"{ex['mean_dab_iou']:.6f}",f"{ex['rgb_l1']:.6f}"]]
++    page+='<h2>独立重新计算，而非抄汇总表</h2><p>重新加载保存的 G／h，对 63 个留出窗推理，再用独立 NumPy float64 实现测量原始浮点图像。未从显示 PNG 反算指标。与旧记录的最大数值差为 '+f"{max(m['max_independent_metric_difference_from_saved'],ex['max_independent_metric_difference_from_saved']):.3g}"+'，小于 10⁻⁶。兼容版本与原 v1 的 G 参数逐元素差为 0。</p>'+table(['方法','DAB 面积率 MAE','DAB 像素 IoU','RGB L1（[-1,1]）'],metric_rows)
++    page+='<p>全部留出窗都在第 0 分箱，100% 分箱准确率没有区分价值。训练频率先验仅由训练窗计数、加一平滑得到。像素常数基线也只使用训练窗的组织内阳性率。另保存了使用留出患病率的诊断下限，并未将其当作部署比较器。本次未补做大规模训练或因果消融，所以也不能证明是哪一个实验组件导致退步。</p>'
++    page+='<h2>错误预测、拒绝与数学上界</h2>'+figure('risk_and_certification_evidence.png','左图只有同来源图像内诊断意义，不是患者级风险曲线；IoU<0.1 是额外空间诊断，未被事后替换为 h 的训练事件。右图是软件公式检验，不是这些附件得到的认证。')
++    page+='<p>零错误时，上界 <code>U=1−(α/K)^(1/n)</code>。这里 K=7、α=0.05；预算 0.10 下，46 个已接受的独立 B 组仍不足，47 个才刚满足零错误条件。非零错误需要更多证据。一般使用固定候选阈值的 Bonferroni 修正单侧二项上界。条件于已冻结的 A 校准器，每个候选的越界概率至多 α/K，联合界至多 α；这依赖真正独立且同分布的来源组，不认证所有相关图像窗或所有像素。</p>'
++    page+='<p>当前数据不满足这些条件；实际来源重叠被程序拒绝。A 校准的拟合本身也不提供有限样本概率校准保证。HE-only 推理的文件读取已监测：输入只读取 H&E；输出 PNG 的解码核验另行记录；G/h 门控摘要各计算 1 次。64 窗均未放行，拒绝不代表表达阴性。</p>'
++    page+='<h2>10 项软件问题：每项对应证据</h2>'+table(['编号','问题','本次可核对依据'],bug_rows)
++    page+='<h2>还差什么才有机会证明研究有效</h2>'+table(['创新','不可省略的数据或实验','预先确定的通过方式'],[
++        ['① 边界','确认标记物和患者/切片身份；独立测试来源；对形态近似冲突候选核实真实表达','冻结距离/表达冲突规则；按来源报告挑战性能、正常集性能及固定覆盖率错误率'],
++        ['② 后验','足量且表达范围完整的独立实染；可靠细胞/膜定位真值；完整 CUT 与单模块消融、多种子训练','独立分布评分胜过训练先验；空间/细胞指标达预设标准；概率与样本覆盖得到外部验证'],
++        ['③ 校准','冻结 G/h 与临床有意义的错误定义；同时含正确/错误事件的独立 risk_train、A、B、test','AUC/适当评分与校准误差；独立 B 上界低于预算；锁定 test 报告实际风险和覆盖率']])
++    page+='<p>这些要求不能通过把同一张图切得更碎、生成更多样本、伪造患者编号或事后改变阈值替代。像素 IoU 以给定配对为参考，可能受残余错位或切片关系影响；在配准精度未核实前，不能当作细胞级准确性。未确认标记物的 IHC 也不能支持“标记物特异”或 HER2 临床评分结论。技术有效性实验通过后，首次创新与否仍需独立文献和现有方法比较，本报告没有证明首次创新。</p>'
++    page+='<h2>一键复核与完整记录</h2><pre>python -m unittest tests.test_expression tests.test_multipair_debug tests.test_proof_audit -v\npython -m tools.audit_complete_evidence\npython -m tools.report_complete_evidence</pre><p>第一行执行 32 项测试；第二行读取真实图片和冻结权重，独立重算，不重新训练 G；第三行生成本报告。原始训练复现入口仍为 <code>python tools/run_multipair_debug.py --steps 160</code>。完整证据目录为 <code>artifacts/complete_evidence</code>；图片、权重和原始训练日志保留在代码包内。EVIDENCE_INDEX.json 用于核对本次证据文件 SHA256。</p>'
++    page+='<details><summary>展开本次 32 项测试原始输出</summary><pre>'+html.escape(tests)+'</pre></details><details><summary>展开独立复算与证书审计 JSON</summary><pre>'+html.escape(json.dumps(d,ensure_ascii=False,indent=2))+'</pre></details></main></body></html>'
++    (out/'complete_evidence_report.html').write_text(page)
++    md='# CUT 全流程证据审计\n\n三项创新均未得到完整有效性证明。软件 32 项回归测试通过；发现并修复第 10 项问题：top-16 漏掉 18 个符合固定规则的候选。\n\n'
++    md+='| 步骤 | 实现 | 结论 | 证据 | 文件 |\n|---|---|---|---|---|\n'+''.join('| '+' | '.join(r)+' |\n' for r in steps)
++    md+='\n本次 G 未重新训练；重新加载实际权重独立推理、独立 NumPy 计量。全部同坐标；无人工 ROI；来源身份未核实，不能声称患者级泛化。详见自包含 HTML 和 complete_evidence.json。\n'
++    (out/'complete_evidence_report.md').write_text(md)
++    print(json.dumps(dict(report=str(out/'complete_evidence_report.html'),tests=32,steps=len(steps),software_issues=len(bug_rows)),ensure_ascii=False))
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/report_multipair_debug.py
+@@ -0,0 +1,123 @@
++"""Evidence report for the multi-pair investigation. Uses measured JSON/PNG only."""
++import argparse
++import base64
++import html
++import json
++from pathlib import Path
++import numpy as np
++from PIL import Image
++import matplotlib
++matplotlib.use('Agg')
++import matplotlib.pyplot as plt
++from expression.artifact_io import save_figure
++
++
++def read(path):return json.loads(Path(path).read_text())
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--base',default='artifacts/multipair_debug');a=p.parse_args()
++    base=Path(a.base).resolve();root=Path(__file__).resolve().parents[1]
++    old=[json.loads(s) for s in (base/'v1_full_manifest.jsonl').read_text().splitlines() if s]
++    new=[json.loads(s) for s in (base/'full_manifest.jsonl').read_text().splitlines() if s]
++    one,two=read(base/'v1/summary.json'),read(base/'v2/summary.json')
++    compat=read(base/'v2_compat/summary.json')
++    # Compatibility conversion is not an additional generator training run.
++    aa=read(base/'v1/holdout_records.json');bb=read(base/'v2_compat/holdout_records.json')
++    difference=max(abs(x['q_generated']-y['q_generated']) for x,y in zip(aa,bb))
++    assert difference<1e-6,'Compatibility conversion changed the mean generator output.'
++    qc=[]
++    for pid in sorted({r['pair_id'] for r in new if r['pair_id'].startswith('2M_')}):
++        before=[r for r in old if r['pair_id']==pid];after=[r for r in new if r['pair_id']==pid]
++        qc.append(dict(pair_id=pid,total=len(after),old_kept=sum(r['valid'] for r in before),
++                       new_kept=sum(r['valid'] for r in after),unobserved=sum(r['reason']=='reference_unobserved' for r in after)))
++    train=[r for r in new if r['valid'] and r['debug_partition']=='train']
++    counts=np.bincount([min(4,int(r['q']*5)) for r in train],minlength=5)
++    prior=(counts+1)/(len(train)+5)
++    prior_log_loss=float(np.mean([-np.log(prior[r['bin_target']]) for r in aa]))
++    info=dict(new_pairs=6,anchor_pairs=1,source_identity_verified=False,new_windows=384,
++        old_kept=sum(r['old_kept'] for r in qc),new_kept=sum(r['new_kept'] for r in qc),quality_by_pair=qc,
++        train_pairs=5,dev_pairs=1,holdout_pairs=1,train_windows=len(train),dev_windows=one['dev']['n'],holdout_windows=one['holdout']['n'],
++        generator_training_runs=2,steps_each=one['steps'],ngf=8,residual_blocks=6,
++        train_bin_counts=counts.tolist(),train_prior_log_loss_on_holdout=prior_log_loss,
++        original=one,experimental=two,compatibility=compat,compatibility_max_stat_difference=difference,
++        trusted_release_coverage=0,scope='same-source image-pair debugging, not independent-patient performance')
++    (base/'debug_findings.json').write_text(json.dumps(info,ensure_ascii=False,indent=2))
++    plt.rcParams.update({'font.family':'DejaVu Sans','font.size':10,'axes.spines.top':False,'axes.spines.right':False})
++    fig,ax=plt.subplots(figsize=(10,4.3),layout='constrained');x=np.arange(len(qc));width=.36
++    for offset,key,color,label in [(-width/2,'old_kept','#ad7330','v1 strong IHC foreground gate'),(width/2,'new_kept','#117c91','v2 broad reference observability')]:
++        bars=ax.bar(x+offset,[r[key] for r in qc],width,color=color,label=label)
++        ax.bar_label(bars,padding=3)
++    ax.set(xticks=x,xticklabels=[r['pair_id'].replace('2M_','') for r in qc],ylim=(0,73),ylabel='Retained same-coordinate windows / 64',title='Faint-stain exclusion bug: 8 / 384 retained before; 333 / 384 after')
++    ax.legend(loc='upper center',ncol=2);save_figure(base/'qc_comparison.png',fig);plt.close(fig)
++    pair=next(r for r in new if r['pair_id']=='2M_13_17')
++    def resolve(value):
++        path=Path(value);return path if path.is_absolute() else (base/path).resolve()
++    he=np.array(Image.open(resolve(pair['he'])));ihc=np.array(Image.open(resolve(pair['ihc'])))
++    imgs=[he,ihc,np.array(Image.open(base/'v1/2M_13_17_generated.png')),np.array(Image.open(base/'v2/2M_13_17_generated.png'))]
++    fig,axes=plt.subplots(1,4,figsize=(15,4.4),layout='constrained')
++    titles=['Held-out H&E / same source family','Paired real IHC / fixed coordinates','v1 / current compatibility G','Experimental mix + within-bin head\nRegressed; disabled by default']
++    for ax,img,title in zip(axes,imgs,titles):ax.imshow(img);ax.set_title(title);ax.axis('off')
++    fig.suptitle('Actual trained neural outputs / 63 measurable windows; no manual recoloring',fontsize=13)
++    save_figure(base/'holdout_comparison.png',fig);plt.close(fig)
++    h1,h2=one['holdout'],two['holdout']
++    fig,axes=plt.subplots(1,3,figsize=(12,4),layout='constrained')
++    vals=[h1['zero_fraction_mae'],h1['mae'],h2['mae']]
++    bars=axes[0].bar(['Fixed zero','v1 / compat','Experiment'],vals,color=['#9ca3aa','#117c91','#bd7620']);axes[0].bar_label(bars,fmt='%.5f',padding=3)
++    axes[0].set(yscale='log',ylim=(.001,1),ylabel='DAB area-fraction MAE (log scale)',title='Low area error can hide bad localization')
++    for ax,key,title in [(axes[1],'dab_iou','DAB pixel IoU: both close to zero'),(axes[2],'rgb_l1','RGB L1 on [-1,1]: both large')]:
++        bars=ax.bar(['v1 / compat','Experiment'],[h1[key],h2[key]],color=['#117c91','#bd7620']);ax.bar_label(bars,fmt='%.5f',padding=3)
++        ax.set(title=title);ax.set_ylim(0,max(h1[key],h2[key])*1.25)
++    save_figure(base/'metric_traps.png',fig);plt.close(fig)
++    missing=next(r for r in new if r['pair_id']=='2M_11_11');mr=[r for r in new if r['pair_id']==missing['pair_id']]
++    observed=np.zeros((8,8));valid=np.zeros((8,8))
++    for r in mr:
++        x,y,_,_=r['he_bbox'];observed[y//128,x//128]=r['ihc_tissue'];valid[y//128,x//128]=r['valid']
++    fig,axes=plt.subplots(1,3,figsize=(11,4),layout='constrained')
++    axes[0].imshow(Image.open(resolve(missing['ihc'])));axes[0].set_title('11_11 real IHC: reference gaps');axes[0].axis('off')
++    im=axes[1].imshow(observed,vmin=0,vmax=1,cmap='viridis');axes[1].set_title('Broad observation fraction / fixed grid');fig.colorbar(im,ax=axes[1],shrink=.65)
++    axes[2].imshow(valid,vmin=0,vmax=1,cmap='Greys_r');axes[2].set_title('17 kept / 46 reference gaps / 1 H&E QC');axes[2].set_xlabel('Original window column')
++    save_figure(base/'missing_reference.png',fig);plt.close(fig)
++    issues=[
++        ('B1','淡染 IHC 被质控整图过滤','新 6 对仅保留 8/384 窗；5 对为 0 窗','改用近白可观测性检查，保留 333/384；同坐标不变，明显缺失仍排除','已修复；可观测性规则仍是代理'),
++        ('B2','文件名进入采样与风险输入','旧代码改名后样本最大差 0.03205；方差图也改变','随机种子来自 H&E 像素内容；改名不再改变样本','已修复并回归测试'),
++        ('B3','模型选项读取宿主 argv','无关宿主 --ngf INVALID 可令构建器退出，exit=2','显式传入独立命令行；原生入口仍读取自身参数','已修复并回归测试'),
++        ('B4','统计窗大小未传播','prepare 可设 256，旧训练器仍默认 128 并报错','从 manifest 推导唯一窗尺寸，实测 256 输入可读取','已修复并回归测试'),
++        ('B5','评估长期保留全部图像张量','旧返回值含 HE/参考/生成/多样本；10000 窗约 13 GiB','正式评估只留记录；需要图像时按批回调','已修复；记录模式返回 0 个图像对象'),
++        ('B6','图像缓存跨实例且容量太小','5 个训练图像对共 10 张图，旧全局 LRU 仅 8 项','实例私有、可配置上限；实验记录 10 次解码、1922 次命中','已修复并回归测试'),
++        ('B7','非法分数及协议变更未拒绝','旧 gate 接受 -1 和 2；只绑定权重未绑定采样/质控','拒绝非概率输入；校准和 h 绑定协议哈希，旧 h 要重训','已修复并回归测试'),
++        ('B8','推理内重复计算权重哈希','每个窗重复读同一 checkpoint','改为每个病例各计算一次','已修复；源码与推理路径检查'),
++        ('B9','导出 PNG 未核验完整性','最后一张 PNG 曾出现截断；训练数值未受影响','从已保存权重等值重建，完整缓冲区原子写入并解码复验','已修复并检查全部报告图片')]
++    remaining=[
++        ('M1','区域比例误差不能代表定位正确',f"v1 留出 MAE={h1['mae']:.6f}，但像素 IoU={h1['dab_iou']:.6f}、RGB L1={h1['rgb_l1']:.4f}。新增空间指标揭露问题；生成器尚未满足染色定位要求。"),
++        ('M2','组合条件策略退步',f"箱内代表值+条件预测混合训练的留出 MAE={h2['mae']:.6f}，劣于固定零基线 {h1['zero_fraction_mae']:.6f}。两项各自作用尚未消融；默认关闭。"),
++        ('M3','分布头多数类假象',f"留出图全部位于第 0 箱，预测准确率 100% 没有区分价值。训练标签频率基线 log-loss={prior_log_loss:.4f}，优于 v1 的 {h1['bin_log_loss']:.4f}。"),
++        ('M4','错误预测器只有单一错误类别','兼容分支开发/留出窗的区域超限事件全为 0；实验分支全为 1。AUROC 均不能计算，接近零的 Brier 不是学会了错误边界。代码已记录类别数。'),
++        ('M5','没有独立患者级校准数据','新文件共享来源前缀，真实患者/切片关系未提供。分图像对留出只是同源调试；不做 A/B 认证，可信放行 0%。'),
++        ('M6','参考缺失与淡染仍难完全自动区分','11_11 的大块近白区域已标记；边缘部分缺失和染色分解仍属启发式。低 DAB 不等于已核验的蛋白阴性。'),
++        ('M7','误差事件定义过粗','默认 δ=0.10 是面积率阈值，可能漏掉稀疏阳性像素或膜定位错误。仍需独立验证的空间/细胞错误目标；不会临时调阈值制造有效性。'),
++        ('M8','训练规模不足以判断研究创新有效','每臂 160 步、ngf=8、6 残差块；只有一张留出图像对。真实 MIST 泛化、连续表达后验及风险校准均未验证。')]
++    table=lambda head,rows:'<table><thead><tr>'+''.join('<th>'+html.escape(x)+'</th>' for x in head)+'</tr></thead><tbody>'+''.join('<tr>'+''.join('<td>'+html.escape(str(x))+'</td>' for x in r)+'</tr>' for r in rows)+'</tbody></table>'
++    gallery=[]
++    for name,caption in [('qc_comparison.png','淡染过滤错误：修复前后保留数量'),('missing_reference.png','缺失参考区域：只做同坐标质量标记'),('holdout_comparison.png','留出图真实生成结果：比例低误差仍可能错色、错定位'),('metric_traps.png','多指标与简单基线：实验策略没有通过有效性验证')]:
++        encoded=base64.b64encode((base/name).read_bytes()).decode()
++        gallery.append(f'<figure><figcaption>{caption}</figcaption><img alt="{caption}" src="data:image/png;base64,{encoded}"></figure>')
++    metrics=[['固定零面积率',f"{h1['zero_fraction_mae']:.6f}",'不作为定位模型','不作为图像模型'],['v1 / 默认兼容路径',f"{h1['mae']:.6f}",f"{h1['dab_iou']:.6f}",f"{h1['rgb_l1']:.6f}"],['实验组合，默认关闭',f"{h2['mae']:.6f}",f"{h2['dab_iou']:.6f}",f"{h2['rgb_l1']:.6f}"]]
++    scope='6 对新图 + 1 对之前的图。固定 5 对训练、1 对开发、1 对留出；270/64/63 个有效窗。来源身份未核实，2M 文件家族跨这些调试角色，不构成独立患者验证。两次生成器训练各 160 步，ngf=8、6 个残差块；兼容分支原样复用 v1 生成器权重，仅重训匹配新采样协议的 h。'
++    body='<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CUT 多配对图片调试报告</title><style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:28px auto;padding:0 18px;color:#202a32;line-height:1.65}h1{font-size:28px}h2{margin-top:32px}figure{margin:28px 0}figcaption{font-weight:650}img{width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{padding:10px;border-bottom:1px solid #d0d8de;text-align:left;vertical-align:top}.scroll{overflow-x:auto}.note{border-left:4px solid #b77927;padding:10px 16px;background:#fbf6ed}@media(max-width:600px){h1{font-size:23px}th,td{font-size:13px;padding:7px}}</style>'
++    body+='<h1>CUT 多配对图片：已修复的软件错误与未解决的模型问题</h1><p class="note">'+scope+'</p>'
++    body+='<p><b>结论：软件修复已通过 24 项回归测试；条件训练组合出现退步，已默认关闭。模型的染色定位、表达后验和病理错误校准尚未通过有效性验证。</b></p><h2>同一留出图像对的实测结果</h2><div class="scroll">'+table(['方法','DAB 面积率 MAE','染色像素 IoU','RGB L1（[-1,1]）'],metrics)+'</div>'
++    body+=''.join(gallery)+'<h2>确认的软件问题与修复</h2><div class="scroll">'+table(['编号','问题','修复前证据','处理','状态'],issues)+'</div><h2>仍未完善的研究问题</h2>'+table(['编号','问题','实测依据与界限'],remaining)
++    body+=f'<h2>默认版本与失败实验均保留</h2><p>兼容转换前后逐窗生成面积率最大差 {difference:.9g}；没有第三次生成器训练。旧风险权重不能静默复用：需重训以匹配采样和质控协议。本批数据不生成独立认证文件，调试权重不放行可信表达展示。</p><p>完整清单、原始逐窗记录、两臂训练日志、失败策略参数、24 项测试和可复现脚本均随代码包提供。病例级风险与细胞表达真值需要另外的真实数据证据。</p></html>'
++    (base/'multipair_debug_report.html').write_text(body)
++    md='# CUT 多配对图片调试报告\n\n'+scope+'\n\n## 核心结论\n\n软件修复通过 24 项回归测试；实验条件策略退步，默认关闭；区域统计不能替代染色定位或临床表达判断。\n\n'
++    md+='| 方法 | DAB 面积率 MAE | 染色像素 IoU | RGB L1 |\n|---|---|---|---|\n'+''.join('| '+' | '.join(r)+' |\n' for r in metrics)
++    for title,rows in [('确认的软件问题',issues),('仍未完善的研究问题',remaining)]:
++        md+='\n## '+title+'\n\n'+''.join('- '+'；'.join(r)+'。\n' for r in rows)
++    md+='\n复现：`python tools/run_multipair_debug.py --steps 160`。测试：`python -m unittest tests.test_expression tests.test_multipair_debug -v`。历史源代码只作对照，当前默认代码拒绝静默复用旧 h / 旧认证协议。\n'
++    (base/'multipair_debug_report.md').write_text(md)
++    (base/'issues.json').write_text(json.dumps(dict(fixed=issues,remaining=remaining),ensure_ascii=False,indent=2))
++    print(json.dumps({k:info[k] for k in ['old_kept','new_kept','train_windows','dev_windows','holdout_windows','train_prior_log_loss_on_holdout','compatibility_max_stat_difference']},indent=2))
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/run_expression_experiment.py
+@@ -0,0 +1,39 @@
++"""One-command dependency-checked research pipeline for a complete dataset."""
++import argparse
++import json
++from pathlib import Path
++import subprocess
++import sys
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--pairs',required=True)
++    p.add_argument('--out',required=True);p.add_argument('--g-steps',type=int,default=10000)
++    p.add_argument('--risk-steps',type=int,default=5000);p.add_argument('--ngf',type=int,default=64)
++    p.add_argument('--batch-size',type=int,default=1);p.add_argument('--budget',type=float,default=.10)
++    a=p.parse_args();out=Path(a.out).resolve();out.mkdir(parents=True,exist_ok=True)
++    stages=[]
++    def run(name,*args):
++        command=[sys.executable,'-m','expression.cli',*map(str,args)]
++        print('STAGE',name,flush=True)
++        result=subprocess.run(command,check=False)
++        stages.append(dict(stage=name,exit_code=result.returncode))
++        (out/'pipeline_status.json').write_text(json.dumps(stages,indent=2))
++        if result.returncode:raise SystemExit('Automatic pipeline stopped at '+name+'; see the explicit error above.')
++    manifest=out/'manifest.jsonl'
++    run('prepare','prepare','--pairs',a.pairs,'--out',manifest,'--auto-split-groups')
++    for model in ['cut','expression_cut']:
++        run('train_'+model,'train','--manifest',manifest,'--out',out/model,'--model',model,
++            '--steps',a.g_steps,'--ngf',a.ngf,'--batch-size',a.batch_size)
++    g=out/'expression_cut/generator.pt';risk=out/'risk/risk.pt'
++    run('challenge','challenge','--manifest',manifest,'--out',out/'challenge')
++    run('fit_risk','fit-risk','--manifest',manifest,'--generator',g,'--out',out/'risk','--steps',a.risk_steps)
++    run('certify','certify','--manifest',manifest,'--generator',g,'--risk',risk,'--out',out/'calibration','--budget',a.budget)
++    run('test','evaluate','--manifest',manifest,'--generator',g,'--risk',risk,
++        '--certificate',out/'calibration/certificate.json','--out',out/'test')
++    for model in ['cut','expression_cut']:
++        run('held_out_'+model,'evaluate-generator','--manifest',manifest,
++            '--generator',out/model/'generator.pt','--out',out/'test'/model)
++
++
++if __name__=='__main__':main()
+--- /dev/null
++++ b/tools/run_multipair_debug.py
+@@ -0,0 +1,49 @@
++"""Reproduce the six-pair bug investigation, retaining same-source demo labels."""
++import argparse
++import json
++import os
++from pathlib import Path
++import subprocess
++import sys
++
++ROOT=Path(__file__).resolve().parents[1]
++sys.path.insert(0,str(ROOT))
++from expression.manifest import load_pair_csv,prepare
++
++
++def main():
++    p=argparse.ArgumentParser(description=__doc__)
++    p.add_argument('--pairs',default=str(ROOT/'examples/multipair/pairs.csv'))
++    p.add_argument('--out',default=str(ROOT/'artifacts/multipair_debug_rerun'))
++    p.add_argument('--steps',type=int,default=160);a=p.parse_args()
++    out=Path(a.out).resolve();out.mkdir(parents=True,exist_ok=True)
++    pairs=load_pair_csv(a.pairs);roles={r['pair_id']:r['debug_partition'] for r in pairs}
++    if any(r['split']!='demo' or r['group_kind']!='unknown' for r in pairs):
++        raise ValueError('This investigation deliberately uses unknown-source demo data, not patient-level test splits.')
++    rows=prepare(pairs,out/'v2_full_manifest.jsonl')
++    for row in rows:
++        row['debug_partition']=roles[row['pair_id']]
++        row['partition_scope']='image-pair debugging only; source IDs unverified'
++    for role in ['full','train','dev','holdout']:
++        selected=rows if role=='full' else [r for r in rows if r['debug_partition']==role]
++        (out/(role+'_manifest.jsonl')).write_text(''.join(json.dumps(r)+'\n' for r in selected))
++    (out/'pairs.json').write_text(json.dumps(pairs,indent=2))
++    legacy=ROOT/'artifacts/multipair_debug/v1_source'
++    if not legacy.is_dir():raise ValueError('Frozen v1 implementation is missing.')
++    env=os.environ.copy();legacy_env=env.copy()
++    legacy_env['PYTHONPATH']=str(legacy)+os.pathsep+env.get('PYTHONPATH','')
++    subprocess.run([sys.executable,'-m','expression.cli','prepare','--pairs',str(Path(a.pairs).resolve()),
++                    '--out',str(out/'v1_full_manifest.jsonl')],cwd=legacy,env=legacy_env,check=True)
++    for variant in ['v1','v2','compat']:
++        child_env=legacy_env if variant=='v1' else env.copy()
++        if variant!='v1':child_env['PYTHONPATH']=str(ROOT)+os.pathsep+env.get('PYTHONPATH','')
++        target=out/('v2_compat' if variant=='compat' else variant)
++        command=[sys.executable,str(ROOT/'tools/multipair_debug_worker.py'),'--variant',variant,
++                 '--manifests',str(out),'--out',str(target),'--steps',str(a.steps)]
++        with (out/(variant+'_run.log')).open('w') as log:
++            subprocess.run(command,cwd=legacy if variant=='v1' else ROOT,env=child_env,stdout=log,stderr=subprocess.STDOUT,check=True)
++    print('Two generator training runs completed; compatibility branch reuses v1 G weights and retrains h only.')
++    print('Next: python -m tools.report_multipair_debug --base',out)
++
++
++if __name__=='__main__':main()
+--- a/train.py
++++ b/train.py
+@@ -44,6 +44,10 @@
+                 model.setup(opt)               # regular setup: load and print networks; create schedulers
+                 model.parallelize()
+             model.set_input(data)  # unpack data from dataset and apply preprocessing
++            if hasattr(model,'set_training_progress'):
++                total_epochs=opt.n_epochs+opt.n_epochs_decay-opt.epoch_count+1
++                batches_per_epoch=max(1,len(dataset)//opt.batch_size)
++                model.set_training_progress((epoch-opt.epoch_count+i/batches_per_epoch)/max(1,total_epochs))
+             model.optimize_parameters()   # calculate loss functions, get gradients, update network weights
+             if len(opt.gpu_ids) > 0:
+                 torch.cuda.synchronize()

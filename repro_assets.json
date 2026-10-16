@@ -1,0 +1,11 @@
+{
+  "archive_name": "contrastive-unpaired-translation-master.zip",
+  "sha256": "8452ff18f9e24f34948bd52a08a37b5a53b664e7952e2e5a5fbf2e01bd30c785",
+  "archive_bytes": 55930863,
+  "asset_prefixes": [
+    "artifacts/",
+    "examples/"
+  ],
+  "source": "Previously delivered conversation reproducibility archive; obtain this exact ZIP locally.",
+  "scope": "Restore ignored attachments and micro-training weights only; not full MIST or clinical validation data."
+}

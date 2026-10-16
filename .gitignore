@@ -1,0 +1,31 @@
+# Python / environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+tmp*/
+# Machine-local or sensitive inputs
+.env
+.env.*
+*.pem
+*.key
+# Generated data, images, weights and training outputs
+/artifacts/
+/datasets/
+/checkpoints/
+/results/
+/runs/
+/examples/attachment_pair/
+/examples/multipair/
+*.pt
+*.pth
+*.ckpt
+*.npz
+*.npy
+*.png
+*.jpg
+*.jpeg
+*.log
+# Keep the small CSV template despite the repository-level *.csv rule.
+!/examples/pairs_template.csv
