@@ -60,6 +60,7 @@ Windows 同样可使用本机 ZIP 路径。导入器核对 `repro_assets.json` �
 
 - [完整方法与运行参数](README_EXPRESSION_CN.md)
 - [BCI HER2：ABMIL 复核与 PASB 启发的后续实验要求](docs/BCI_ABMIL_PASB_RESEARCH_REQUIREMENTS_CN.md)
+- [2026-11-11 阶段二/三结果与 G1 预注册草案](docs/BCI_G1_WEAK_SUPERVISION_PREREG_DRAFT_CN.md)
 - [18 个步骤的证据账本](docs/evidence/complete_evidence_report.md)
 - [逐步骤结构化证据](docs/evidence/step_evidence_complete.json)
 - [32 项测试的历史原始输出](docs/evidence/tests.txt)
