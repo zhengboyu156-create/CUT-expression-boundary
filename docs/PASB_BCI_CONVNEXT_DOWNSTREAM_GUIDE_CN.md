@@ -101,13 +101,70 @@ TorchVision 默认预处理可作为本项目起点：缩放后中心裁剪至 2
 4. 用冻结的各组最佳检查点，逐一预测同一测试集，保存 ID、真实标签、预测类别、四类概率和模型/生成器版本。
 5. 至少报告 Accuracy、Macro-F1、QWK，以及四类的 precision、recall、F1 和混淆矩阵；AUC 如计算，注明四分类 one-vs-rest / one-vs-one、宏平均方式和概率来源。可沿用 3 个随机种子，报告均值 ± 种子标准差，不将其称为病例置信区间。
 
-执行前还需编写并检查数据读取、训练和评估脚本；本仓库当前的权重下载脚本**不包含**这些功能。不要将本说明中的示例误认为已经跑出的分类实验。
+实际 ConvNeXt 训练脚本和本地运行快照见第 7 节。第 7 节的指标是运行中间结果，不是最终实验汇总。
 
 ## 6. 结果解读与记录
 
 - 对照各组训练及测试 ID、标签、生成图映射、随机种子，确保除输入图像外条件可比。
 - 记录每个生成方法的训练数据、版本和推理时是否使用真实 IHC。虚拟 IHC 结果较低或融合不提升时如实报告，不应预设必须高于 H&E。
 - 同一批样本比较不同输入时可使用配对分析；置信区间的重采样单位应与研究独立单位一致。没有可靠病例映射时，只能报告图像级统计，不得称为病例级。
-- 已有 ABMIL 四分类结果可作为本项目内另一个模型的对照，但 ConvNeXt-T 分类实验尚未完成；不同结构和标签来源会影响解释。
+- 已有 ABMIL 四分类结果可作为本项目内另一个模型的对照；ConvNeXt-T 已按第 7 节配置启动，最终结果尚未完成。不同结构和标签来源会影响解释。
 
 论文声称的范围以原文为准，本方案涉及的病例独立性、组别设计和四分类为项目研究设计，不应写成作者已报告的事实。
+
+## 7. 本地 ConvNeXt 实际运行记录（2026-11-11，进行中）
+
+本节记录本地实际启动的实验配置和当时进度。它补充第 5 节的方案状态；实验完成前，下表只能作为中间结果，不能当作最终方法排名。
+
+### 分组与数据
+
+- 分类器：TorchVision `convnext_tiny`，加载 ImageNet-1K 官方权重 `convnext_tiny-983f1562.pth`，严格加载后将 `classifier[2]` 替换为 4 类线性层；**全网络微调**，不是固定特征提取。
+- 分组：真实 H&E、MAPS-GAN V3 虚拟 IHC、CycleGAN 虚拟 IHC、CUT 虚拟 IHC、M2PL-GAN 虚拟 IHC、真实 HER2 IHC。每组单独训练，不做 H&E/IHC 特征融合。
+- 标签：0、1、2、3 分别对应项目清单的 HER2 0、1+、2+、3+ 标签。
+- 固定图像级划分：fit 3,311 张、validation 585 张、test 977 张；六组使用相同 ID 和标签。MAPS 图像由现有 V3 检查点生成；其他虚拟 IHC 由 `baseline_feature_manifest.csv` 中对应方法的图像路径提供。
+- 当前运行包含的是**既有 MAPS-GAN V3**输出；并行训练中的局部 DAB 权重消融尚未纳入本轮分类。
+
+### 输入预处理与训练
+
+| 项目 | 实际配置 |
+| --- | --- |
+| 输入尺寸 | RGB 方形图先 Resize 到 256，再取 224×224 |
+| 训练增强 | RandomCrop(224)、随机水平翻转、随机垂直翻转；不加颜色扰动 |
+| 验证/测试 | Resize(256) 后 CenterCrop(224) |
+| 归一化 | ImageNet mean `(0.485, 0.456, 0.406)`、std `(0.229, 0.224, 0.225)` |
+| 初始化 | 官方 ImageNet-1K ConvNeXt-Tiny；SHA-256 `983f1562536e84ff750a1576fb08e54de751dbf2e17c0d8a4a13704341fdcd3d` |
+| 优化器 | AdamW，learning rate `1e-4`，weight decay `1e-4` |
+| 损失 | 训练集类别频数的平方根倒数权重，归一化到均值 1 后用于加权交叉熵 |
+| Batch / 轮数 | batch size 32；最多 50 epoch；validation Macro-F1 连续 10 轮不提升则早停 |
+| 检查点选择 | 只按 validation Macro-F1 选择，平分时保留较早轮次 |
+| 随机种子 | 1234、2345、3456；每个输入组独立训练 3 次 |
+| 数值精度 | CUDA 前向使用 FP16 autocast；概率 softmax 和 AUC 计算用 FP32 |
+
+测试指标包括 Accuracy、四分类 macro one-vs-rest AUC、Macro-F1、QWK、逐类 Precision/Recall/F1 及混淆矩阵。表中种子汇总使用均值 ± 样本标准差；这不是病例级置信区间。
+
+### 启动命令
+
+```powershell
+python tools/train_bci_convnext.py `
+  --split-csv 'D:\xuniranse\BCI\BCI_HER2_ABMIL_20261110\split.csv' `
+  --baseline-manifest 'D:\xuniranse\BCI\BCI_HER2_ABMIL_20261110\comparison_baselines_20261111\baseline_feature_manifest.csv' `
+  --weights 'D:\xuniranse\weights\convnext_tiny-983f1562.pth' `
+  --output-dir 'D:\xuniranse\BCI\BCI_HER2_CONVNEXT_20261111_retry3\' `
+  --methods he maps_v3 cyclegan cut m2plgan real_ihc `
+  --seeds 1234 2345 3456
+```
+
+本次运行输出目录已存在，直接复跑会被覆盖保护拒绝；复现时应将 `--output-dir` 改成一个新的空目录。脚本默认不覆盖已有实验输出。图像、数据清单、权重和训练结果保存在本地；不应将患者图像、权重或完整预测文件提交到公开仓库。
+
+### 运行快照
+
+截至 **2026-11-11 21:12（UTC+8）**，总计 18 个“输入组×随机种子”运行中有 8 个已完成，CycleGAN seed 3456 正在训练。H&E 和 MAPS-GAN V3 三个种子均已完成：
+
+| 输入组 | Accuracy | Macro OvR AUC | Macro-F1 | QWK |
+| --- | ---: | ---: | ---: | ---: |
+| 真实 H&E | 0.9335 ± 0.0031 | 0.9934 ± 0.0005 | 0.9296 ± 0.0076 | 0.8969 ± 0.0086 |
+| MAPS-GAN V3 虚拟 IHC | 0.7834 ± 0.0101 | 0.9401 ± 0.0031 | 0.7336 ± 0.0178 | 0.6250 ± 0.0186 |
+
+本地完整输出目录为 `D:\xuniranse\BCI\BCI_HER2_CONVNEXT_20261111_retry3`。该划分是图像级，现有文件没有可核实的病例映射，不能据此声称病例级独立验证。MAPS V3 生成器使用过整个 3,896 张训练分区，包含下游分类验证子集；测试 977 张未用于生成器训练。此点可能影响 MAPS 组的验证选模，解释中需保留。
+
+---
